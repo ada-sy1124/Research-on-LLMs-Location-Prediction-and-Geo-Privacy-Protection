@@ -3,14 +3,14 @@ from swift.llm import sft_main, SftArguments
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = ""
 
-print("🚀 准备启动 Qwen2.5-VL 的 QLoRA 微调...")
+print("🚀 准备启动 Qwen3-VL 的 QLoRA 微调...")
 
 # 把刚才命令行的所有参数，优雅地写进 Python 的配置类里
 args = SftArguments(
     # 1. 模型与数据路径
-    model_id_or_path="/root/autodl-tmp/Qwen2.5-VL-7B-Instruct",
+    model_id_or_path="/root/autodl-tmp/Qwen3-VL-8B-Instruct",
     dataset=["/root/autodl-tmp/my_train_data.jsonl"],
-    output_dir="/root/autodl-tmp/qwen2_5_vl_lora_output",
+    output_dir="/root/autodl-tmp/qwen3_vl_qlora_output",
     
     # 2. 核心量化与微调策略 (QLoRA)
     sft_type="lora",

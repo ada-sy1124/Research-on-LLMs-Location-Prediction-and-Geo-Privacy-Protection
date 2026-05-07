@@ -64,7 +64,7 @@ def run():
     print(f"🚀 开始基于物理遮挡进行 Gemini 坐标重测，当前待处理数据量: {len(dataset)} 条...")
 
     buffer = []
-    chunk_id = 0
+    chunk_id = 24 ##############
 
     for item in tqdm(dataset, desc="Evaluating Masked Images"):
         image_obj = item["image_original"]
