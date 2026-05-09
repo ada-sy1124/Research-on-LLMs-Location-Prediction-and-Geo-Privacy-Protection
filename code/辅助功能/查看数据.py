@@ -11,3 +11,6 @@ from geoai_pipeline.pipelines.helpers.preview_dataset import run
 
 if __name__ == "__main__":
     run()
+
+
+# python .\code\辅助功能\查看数据.py
