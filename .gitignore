@@ -8,3 +8,4 @@ __pycache__/
 
 # macOS metadata
 **/.DS_Store
+patch_yes_new_aftersam_ids.py

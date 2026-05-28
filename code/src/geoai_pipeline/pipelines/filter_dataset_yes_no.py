@@ -21,11 +21,14 @@ def run():
 
     start_index = get_int("FILTER_START_INDEX", 0)
     end_index = get_int("FILTER_END_INDEX", 11054)
+    
+    # 保留参数读取以防其他依赖报错，但不再用于把读取过程切片
     batch_size = get_int("FILTER_BATCH_SIZE", 30)
 
     yes_dir = get_path("YES_DIR", "./data/YES")
     no_dir = get_path("NO_DIR", "./data/NO")
 
+    # 存盘触发器：依然保持每30条保存一次，防止断电白跑
     buffer_size = get_int("FILTER_BUFFER_SIZE", 30)
     dist_threshold_km = get_float("FILTER_DIST_THRESHOLD_KM", 5.0)
     sleep_seconds = get_int("FILTER_SLEEP_SECONDS", 0)
@@ -49,76 +52,87 @@ def run():
     yes_buffer, no_buffer = [], []
     yes_chunk_id, no_chunk_id = yes_chunk_start_id, no_chunk_start_id
 
-    for batch_start in range(start_index, end_index, batch_size):
-        batch_end = min(batch_start + batch_size, end_index)
-        current_split = f"train[{batch_start}:{batch_end}]"
+    # ------------------ 核心重构：一次性加载全局切片 ------------------
+    current_split = f"train[{start_index}:{end_index}]"
+    print(f"\n📦 正在构建全局数据索引 (Split: {current_split})...")
+    
+    if os.path.isdir(dataset_name):
+        dataset = load_dataset("parquet", data_dir=dataset_name, split=current_split)
+    else:
+        dataset = load_dataset(dataset_name, split=current_split)
 
-        print(f"\n 开始处理批次: {batch_start} 到 {batch_end} (Split: {current_split})")
+    total_samples = len(dataset)
+    print(f"🚀 数据索引构建完毕！总计 {total_samples} 条数据。全面启动流水线...")
+    # ------------------------------------------------------------------
+
+    # 只有一个干净、连续的全局进度条
+    for local_index, item in enumerate(tqdm(dataset, desc="🌌 整体筛选进度", total=total_samples)):
+        source_index = start_index + local_index
+        sample_id = str(item.get("sample_id") or item.get("id") or f"source_{source_index:06d}")
+        lat_true = float(item["latitude"])
+        lon_true = float(item["longitude"])
+
+        # --- 坚不可摧的图片解析逻辑 ---
+        raw_image = item["image"]
         
-        if os.path.isdir(dataset_name):
-            dataset = load_dataset("parquet", data_dir=dataset_name, split=current_split)
+        if isinstance(raw_image, dict) and "bytes" in raw_image:
+            img_obj = Image.open(io.BytesIO(raw_image["bytes"])).convert("RGB")
+        elif hasattr(raw_image, "convert"):
+            img_obj = raw_image.convert("RGB")
         else:
-            dataset = load_dataset(dataset_name, split=current_split)
+            img_obj = raw_image
+        # -------------------------------
 
-        for local_index, item in enumerate(tqdm(dataset, desc=f"Batch {batch_start}-{batch_end}")):
-            source_index = batch_start + local_index
-            sample_id = str(item.get("sample_id") or item.get("id") or f"source_{source_index:06d}")
-            lat_true = float(item["latitude"])
-            lon_true = float(item["longitude"])
+        lat_pred, lon_pred, reason_text, reason_classes, q = predict_latlon_and_reason(model, img_obj, GEO_PROMPT)
 
-            # --- 坚不可摧的图片解析逻辑 ---
-            raw_image = item["image"]
-            
-            if isinstance(raw_image, dict) and "bytes" in raw_image:
-                img_obj = Image.open(io.BytesIO(raw_image["bytes"])).convert("RGB")
-            elif hasattr(raw_image, "convert"):
-                img_obj = raw_image.convert("RGB")
-            else:
-                img_obj = raw_image
-            # -------------------------------
+        if lat_pred == 0.0 and lon_pred == 0.0 and q == 0:
+            dist = 99999.0
+        else:
+            dist = haversine_km(lat_pred, lon_pred, lat_true, lon_true)
 
-            lat_pred, lon_pred, reason_text, reason_classes, q = predict_latlon_and_reason(model, img_obj, GEO_PROMPT)
+        label = "YES" if dist <= dist_threshold_km else "NO"
 
-            if lat_pred == 0.0 and lon_pred == 0.0 and q == 0:
-                dist = 99999.0
-            else:
-                dist = haversine_km(lat_pred, lon_pred, lat_true, lon_true)
+        item_out = {
+            "sample_id": sample_id,
+            "source_index": source_index,
+            "image": img_obj,  # 确保后续保存阶段拿到的是真正的图片对象
+            "latitude_pred": lat_pred,
+            "longitude_pred": lon_pred,
+            "latitude": lat_true,
+            "longitude": lon_true,
+            "d": dist,
+            "reason": reason_text,
+            "reason_class": reason_classes,
+            "q": q,
+        }
 
-            label = "YES" if dist <= dist_threshold_km else "NO"
+        # 缓冲与定期落盘逻辑
+        if label == "YES":
+            yes_buffer.append(item_out)
+            if len(yes_buffer) >= buffer_size:
+                save_chunk(yes_buffer, yes_dir, yes_chunk_id)
+                yes_buffer.clear()
+                yes_chunk_id += 1
+        else:
+            no_buffer.append(item_out)
+            if len(no_buffer) >= buffer_size:
+                save_chunk(no_buffer, no_dir, no_chunk_id)
+                no_buffer.clear()
+                no_chunk_id += 1
 
-            item_out = {
-                "sample_id": sample_id,
-                "source_index": source_index,
-                "image": img_obj,  # 确保后续保存阶段拿到的是真正的图片对象
-                "latitude_pred": lat_pred,
-                "longitude_pred": lon_pred,
-                "latitude": lat_true,
-                "longitude": lon_true,
-                "d": dist,
-                "reason": reason_text,
-                "reason_class": reason_classes,
-                "q": q,
-            }
+        # 定期清理内存，防止图片对象堆积
+        del img_obj
+        if local_index > 0 and local_index % 100 == 0:
+            gc.collect()
 
-            if label == "YES":
-                yes_buffer.append(item_out)
-                if len(yes_buffer) >= buffer_size:
-                    save_chunk(yes_buffer, yes_dir, yes_chunk_id)
-                    yes_buffer.clear()
-                    yes_chunk_id += 1
-            else:
-                no_buffer.append(item_out)
-                if len(no_buffer) >= buffer_size:
-                    save_chunk(no_buffer, no_dir, no_chunk_id)
-                    no_buffer.clear()
-                    no_chunk_id += 1
+        time.sleep(sleep_seconds)
 
-            time.sleep(sleep_seconds)
+    # 循环结束后，清空整个 dataset
+    del dataset
+    gc.collect()
+    print("✅ 全局数据遍历完成，内存已清理。")
 
-        del dataset
-        gc.collect()
-        print(f"✅ 批次 {batch_start}-{batch_end} 完成，内存已清理。")
-
+    # 把没凑够30个的尾巴强行落盘
     if yes_buffer:
         save_chunk(yes_buffer, yes_dir, yes_chunk_id)
     if no_buffer:
