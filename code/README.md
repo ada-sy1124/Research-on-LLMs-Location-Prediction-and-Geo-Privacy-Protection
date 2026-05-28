@@ -1,5 +1,29 @@
 # GeoAI Scripts Refactor
 
+## YES_id new prompt rerun
+
+Run Gemini on `data/YES_id` again with a new prompt template:
+
+```bash
+python code/rerun_yes_id_new_prompt.py
+```
+
+Default output: `data/YES_id_new_prompt`.
+
+Useful environment variables:
+
+- `YES_ID_RERUN_INPUT_DATASET_PATH`: input dataset path, default `./data/YES_id`
+- `YES_ID_RERUN_OUTPUT_DIR`: output chunk directory, default `./data/YES_id_new_prompt`
+- `YES_ID_RERUN_START_INDEX`: start row, default `0`
+- `YES_ID_RERUN_END_INDEX`: end row, default all rows
+- `YES_ID_RERUN_BUFFER_SIZE`: rows per saved chunk, default `30`
+- `YES_ID_RERUN_SLEEP_SECONDS`: sleep between Gemini calls, default `15`
+- `YES_ID_RERUN_GEMINI_API_KEY`: optional dedicated Gemini key, falls back to `GEMINI_API_KEY`
+
+Output fields include `sample_id`, `image`, `latitude_true`, `longitude_true`,
+`latitude_pred`, `longitude_pred`, `d`, `model_chain_of_thought`,
+`model_reasoning`, and `model_raw_output`.
+
 本目录已重构为“脚本入口 + src 包”的标准工程结构，在不改变原有功能的前提下，把公共逻辑、配置和工具函数进行了模块化。
 
 ## 目录结构

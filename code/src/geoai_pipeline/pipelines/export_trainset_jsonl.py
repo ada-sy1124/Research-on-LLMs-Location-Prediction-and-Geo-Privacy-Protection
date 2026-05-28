@@ -22,6 +22,14 @@ Perform a vulnerability scan. Identify and group all concrete, physical objects 
 STAGE 2 (Defender's Decision): 
 Based on the vulnerability scan, select the SINGLE most efficient macro-category to mask. You may also select "Nothing" if masking any category would destroy image utility without significant privacy gains.
 
+CRITICAL INSTRUCTIONS FOR OUTPUT FORMAT & CONTENT:
+
+[GLOBAL STRUCTURE RULES]
+1. The <VULNERABILITY_SCAN> block MUST be generated first to simulate the attack.
+2. The <DEFENSE_DECISION> block MUST be the absolute final element. 
+3. Format strictly as: ClassName: obj1, obj2; NextClass: obj3; ... 
+4. List ONLY physical, visible objects. Every object must be a concrete visible instance. You MUST include a quantifier (e.g., a number, "a/an", or "some") and at least one descriptive adjective before the noun (e.g., "a blue street name sign", "some white lane lines").
+
 Output strictly using the following XML format:
 <VULNERABILITY_SCAN>
 Class1: obj1, obj2; Class2: obj3; ...
@@ -29,15 +37,6 @@ Class1: obj1, obj2; Class2: obj3; ...
 
 <DEFENSE_DECISION>
 [Optimal Category Name]
-</DEFENSE_DECISION>
-
-Example:
-<VULNERABILITY_SCAN>
-Signage & Text: street name sign #1, warning sign #1, parking sign #1; Road Markings: lane line #1, zebra crossing #1; Vehicles: bus #1; Architecture: house #1, house #2; Vegetation: tree #1, tree #2, tree #3; Infrastructure: bollard #1, bollard #1
-</VULNERABILITY_SCAN>
-
-<DEFENSE_DECISION>
-Signage & Text
 </DEFENSE_DECISION>"""
 
 
