@@ -5,4 +5,6 @@ code/.env
 __pycache__/
 *.py[cod]
 *$py.class
-git rm -r --cached code/src/geoai_pipeline/__pycache__ code/src/geoai_pipeline/pipelines/__pycache__ code/src/geoai_pipeline/tools/__pycache__
+
+# macOS metadata
+**/.DS_Store

@@ -1,13 +1,14 @@
 import json
-import os
 from pathlib import Path
 
-from datasets import load_from_disk
 from tqdm import tqdm
 
+from geoai_pipeline.config import get_env, get_path
+from geoai_pipeline.tools.dataset_io import load_chunks_or_dataset
 
-YES_DATASET_PATH = "./data/YES_id"
-FLAT_DATASET_PATH = "./data/YES_Mask_selected_id_flat"
+
+YES_DATASET_PATH = "./data/YES"
+SELECTED_DATASET_PATH = "./data/YES_Mask_selected"
 IMAGE_SAVE_DIR = "./data/sft_images"
 JSONL_OUTPUT_PATH = "./data/train_cot.jsonl"
 
@@ -40,49 +41,89 @@ Class1: obj1, obj2; Class2: obj3; ...
 </DEFENSE_DECISION>"""
 
 
-def get_path(name: str, default: str) -> str:
-    value = os.getenv(name)
-    if value is None or value == "":
-        value = default
-    return str(Path(value).expanduser())
-
-
-def alignment_id_for_index(index: int) -> str:
+def sample_id_for_index(index: int) -> str:
     return f"yes_{index:06d}"
 
 
-def get_alignment_id(sample: dict, index: int) -> str:
-    alignment_id = sample.get("alignment_id")
-    if alignment_id is None or alignment_id == "":
-        return alignment_id_for_index(index)
-    return str(alignment_id)
+def get_sample_id(sample: dict, index: int) -> str:
+    sample_id = sample.get("sample_id")
+    if sample_id is None or sample_id == "":
+        return sample_id_for_index(index)
+    return str(sample_id)
 
 
-def build_reason_by_id(yes_dataset) -> dict[str, str]:
+def build_reason_by_sample_id(yes_dataset) -> dict[str, str]:
     if "reason" not in yes_dataset.column_names:
         raise KeyError(f"YES dataset must contain column 'reason'. Current columns: {yes_dataset.column_names}")
 
-    reason_by_id = {}
-    duplicate_ids = []
+    reason_by_sample_id = {}
+    duplicate_sample_ids = []
 
     for index, sample in enumerate(yes_dataset):
-        alignment_id = get_alignment_id(sample, index)
-        if alignment_id in reason_by_id:
-            duplicate_ids.append(alignment_id)
+        sample_id = get_sample_id(sample, index)
+        if sample_id in reason_by_sample_id:
+            duplicate_sample_ids.append(sample_id)
             continue
-        reason_by_id[alignment_id] = str(sample.get("reason") or "").strip()
+        reason_by_sample_id[sample_id] = str(sample.get("reason") or "").strip()
 
-    if duplicate_ids:
-        raise ValueError(f"Duplicate alignment_id values in YES dataset: {duplicate_ids[:20]}")
+    if duplicate_sample_ids:
+        raise ValueError(f"Duplicate sample_id values in YES dataset: {duplicate_sample_ids[:20]}")
 
-    return reason_by_id
+    return reason_by_sample_id
 
 
-def validate_flat_dataset(flat_dataset) -> None:
-    required_columns = {"image", "alignment_id", "target_mask_category"}
-    missing_columns = sorted(required_columns - set(flat_dataset.column_names))
+def normalize_classes(classes) -> tuple[str, ...]:
+    if classes is None:
+        return ()
+    return tuple(str(value) for value in classes)
+
+
+def yes_key(sample: dict) -> tuple:
+    return (
+        float(sample["latitude"]),
+        float(sample["longitude"]),
+        float(sample["d"]),
+        normalize_classes(sample["reason_class"]),
+    )
+
+
+def selected_key(sample: dict) -> tuple:
+    return (
+        float(sample["latitude_true"]),
+        float(sample["longitude_true"]),
+        float(sample["d_original"]),
+        normalize_classes(sample["ablated_class"]),
+    )
+
+
+def build_reason_by_selected_index(yes_dataset, selected_dataset) -> dict[int, tuple[str, str]]:
+    selected_buckets = {}
+    for selected_index, sample in enumerate(selected_dataset):
+        selected_buckets.setdefault(selected_key(sample), []).append(selected_index)
+
+    reason_by_selected_index = {}
+    for yes_index, yes_sample in enumerate(yes_dataset):
+        bucket = selected_buckets.get(yes_key(yes_sample), [])
+        if not bucket:
+            continue
+        selected_index = bucket.pop(0)
+        sample_id = get_sample_id(yes_sample, yes_index)
+        reason_by_selected_index[selected_index] = (sample_id, str(yes_sample.get("reason") or "").strip())
+
+    missing_count = len(selected_dataset) - len(reason_by_selected_index)
+    if missing_count:
+        raise ValueError(f"{missing_count} selected samples could not be matched to YES rows.")
+
+    return reason_by_selected_index
+
+
+def validate_selected_dataset(selected_dataset, use_sample_id: bool) -> None:
+    required_columns = {"image", "target_mask_category"}
+    if not use_sample_id:
+        required_columns.update({"latitude_true", "longitude_true", "d_original", "ablated_class"})
+    missing_columns = sorted(required_columns - set(selected_dataset.column_names))
     if missing_columns:
-        raise KeyError(f"Flat dataset is missing required columns: {missing_columns}")
+        raise KeyError(f"Selected dataset is missing required columns: {missing_columns}")
 
 
 def build_assistant_content(vulnerability_scan: str, decision: str) -> str:
@@ -103,15 +144,21 @@ def build_assistant_content(vulnerability_scan: str, decision: str) -> str:
 
 def run():
     yes_dataset_path = get_path("YES_REASON_DATASET_PATH", YES_DATASET_PATH)
-    flat_dataset_path = get_path("YES_MASK_SELECTED_FLAT_DATASET_PATH", FLAT_DATASET_PATH)
+    selected_default_path = get_env("YES_MASK_SELECTED_FLAT_DATASET_PATH", SELECTED_DATASET_PATH)
+    selected_dataset_path = get_path("YES_MASK_SELECTED_DATASET_PATH", selected_default_path)
     image_save_dir = get_path("TRAINSET_IMAGE_SAVE_DIR", IMAGE_SAVE_DIR)
     jsonl_output_path = get_path("TRAINSET_JSONL_OUTPUT_PATH", JSONL_OUTPUT_PATH)
 
-    yes_dataset = load_from_disk(yes_dataset_path)
-    flat_dataset = load_from_disk(flat_dataset_path)
-    validate_flat_dataset(flat_dataset)
-
-    reason_by_id = build_reason_by_id(yes_dataset)
+    yes_dataset = load_chunks_or_dataset(yes_dataset_path)
+    selected_dataset = load_chunks_or_dataset(selected_dataset_path)
+    use_sample_id = "sample_id" in selected_dataset.column_names and "sample_id" in yes_dataset.column_names
+    validate_selected_dataset(selected_dataset, use_sample_id)
+    if use_sample_id:
+        reason_by_sample_id = build_reason_by_sample_id(yes_dataset)
+        reason_by_selected_index = None
+    else:
+        reason_by_sample_id = None
+        reason_by_selected_index = build_reason_by_selected_index(yes_dataset, selected_dataset)
 
     image_save_path = Path(image_save_dir)
     jsonl_path = Path(jsonl_output_path)
@@ -119,15 +166,23 @@ def run():
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
     missing_ids = []
+    exported_sample_ids = set()
     with jsonl_path.open("w", encoding="utf-8") as f:
-        for index, sample in enumerate(tqdm(flat_dataset, desc="Exporting trainset JSONL")):
-            alignment_id = get_alignment_id(sample, index)
-            vulnerability_scan = reason_by_id.get(alignment_id)
-            if vulnerability_scan is None:
-                missing_ids.append(alignment_id)
-                continue
+        for index, sample in enumerate(tqdm(selected_dataset, desc="Exporting trainset JSONL")):
+            if use_sample_id:
+                sample_id = get_sample_id(sample, index)
+                vulnerability_scan = reason_by_sample_id.get(sample_id)
+                if vulnerability_scan is None:
+                    missing_ids.append(sample_id)
+                    continue
+            else:
+                sample_id, vulnerability_scan = reason_by_selected_index[index]
 
-            image_filename = f"{alignment_id}.jpg"
+            if sample_id in exported_sample_ids:
+                raise ValueError(f"Duplicate sample_id in selected dataset: {sample_id}")
+            exported_sample_ids.add(sample_id)
+
+            image_filename = f"{sample_id}.jpg"
             image_path = image_save_path / image_filename
             sample["image"].save(image_path)
 
@@ -146,13 +201,13 @@ def run():
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     if missing_ids:
-        raise ValueError(f"{len(missing_ids)} flat samples could not be matched by alignment_id: {missing_ids[:20]}")
+        raise ValueError(f"{len(missing_ids)} selected samples could not be matched by sample_id: {missing_ids[:20]}")
 
     print(f"Saved SFT JSONL: {jsonl_path}")
     print(f"Saved images to: {image_save_path}")
     print(f"YES rows: {len(yes_dataset)}")
-    print(f"Flat rows: {len(flat_dataset)}")
-    print(f"Exported rows: {len(flat_dataset)}")
+    print(f"Selected rows: {len(selected_dataset)}")
+    print(f"Exported rows: {len(selected_dataset)}")
 
 
 if __name__ == "__main__":

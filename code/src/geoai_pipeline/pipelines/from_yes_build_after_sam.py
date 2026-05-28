@@ -3,11 +3,12 @@ import os
 import datasets
 import numpy as np
 import torch
-from datasets import Dataset, load_from_disk
+from datasets import Dataset
 from PIL import Image
 
 from geoai_pipeline.config import get_env, get_path
 from geoai_pipeline.constants import SAM_PROMPT_MAPPING
+from geoai_pipeline.tools.dataset_io import load_chunks_or_dataset
 
 
 def get_masked_images_and_ratios(image, categories, processor):
@@ -80,10 +81,12 @@ def run():
     processor = Sam3Processor(model)
 
     print("正在加载输入数据集...")
-    dataset = load_from_disk(input_dataset_path)
+    dataset = load_chunks_or_dataset(input_dataset_path)
 
     features = datasets.Features(
         {
+            "sample_id": datasets.Value("string"),
+            "source_index": datasets.Value("int64"),
             "image_original": datasets.Image(),
             "latitude": datasets.Value("float64"),
             "longitude": datasets.Value("float64"),
@@ -95,7 +98,10 @@ def run():
     )
 
     def data_generator():
-        for item in dataset:
+        for index, item in enumerate(dataset):
+            sample_id = str(item.get("sample_id") or f"yes_{index:06d}")
+            source_index_value = item.get("source_index")
+            source_index = int(source_index_value) if source_index_value is not None else -1
             image_obj = item["image"]
             lat = item["latitude"]
             lon = item["longitude"]
@@ -108,6 +114,8 @@ def run():
             masked_images, q_ratios = get_masked_images_and_ratios(image_obj, reason_classes, processor)
 
             yield {
+                "sample_id": sample_id,
+                "source_index": source_index,
                 "image_original": image_obj,
                 "latitude": lat,
                 "longitude": lon,

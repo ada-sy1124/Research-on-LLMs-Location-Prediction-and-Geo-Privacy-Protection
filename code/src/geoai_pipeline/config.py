@@ -37,5 +37,12 @@ def get_float(name: str, default: float) -> float:
         return default
 
 
+def get_bool(name: str, default: bool) -> bool:
+    value = get_env(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def get_path(name: str, default: str) -> str:
     return str(Path(get_env(name, default)).expanduser())
