@@ -1,0 +1,37 @@
+YES
+{
+  "image": <PIL图像>,
+  "latitude_pred": float,   # Gemini预测纬度
+  "longitude_pred": float,  # Gemini预测经度
+  "latitude": float,        # 真值纬度
+  "longitude": float,       # 真值经度
+  "d": float,               # 预测与真值的距离(km)
+  "reason": str,            # REASONING文本
+  "reason_class": [str, ...], # reason里提取出的类别列表
+  "q": int                  # reason里目标数量统计
+}
+
+
+YES_NEW_afterSAM
+{
+    "image_original": <一张原始图片>,
+    "latitude": 12.3456,
+    "longitude": 78.9012,
+    "d_original": 3.14,
+    "ablated_class": ["Vehicles", "Signage & Text", ...],
+    "masked_image": [<mask后图片1>, <mask后图片2>, ...],
+    "q_ratio": [0.75, 0.5, ...]
+}
+
+YES_Mask_new
+{
+    "image": <原始图片>,
+    "latitude_true": 12.345,
+    "longitude_true": 67.890,
+    "d_original": 3.2,
+    "ablated_class": ["Vehicles", "Vegetation", "Signage & Text"],
+    "q_ratio": [0.8, 0.6, 0.4],
+    "d_prime": [10.5, 25.1, 99999.0],
+    "d_diff": [7.3, 21.9, 99999.0],
+}
+

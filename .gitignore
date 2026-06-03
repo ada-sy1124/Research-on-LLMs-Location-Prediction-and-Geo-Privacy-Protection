@@ -1,0 +1,17 @@
+code/.env
+/data/
+/model_cache/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+git rm -r --cached code/src/geoai_pipeline/__pycache__ code/src/geoai_pipeline/pipelines/__pycache__ code/src/geoai_pipeline/tools/__pycache__
+conda_envs
+conda_pkgs
+sam3
+数据集测试
+切分后images
+pip_cache
+metal_harbor_fence.jpg
+切分图像.py
