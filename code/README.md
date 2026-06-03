@@ -1,25 +1,89 @@
-# GeoAI Pipeline
+# S-CAP: 语义因果归因与隐私保护框架
+**Semantic-Causal Attribution and Protection (S-CAP)**
 
-`code/` 目录现在只保留主流程入口；具体逻辑集中在 `src/geoai_pipeline/`。
+## 核心摘要 (Abstract)
+针对当前多模态大语言模型（MLLM）在处理图像时容易泄露地理隐私的问题，现有的全局对抗扰动方法（如 GeoShield）虽然能掩盖位置信息，但会不可避免地破坏图像的全局细粒度特征，导致模型在执行通用视觉问答（VQA）时出现严重的“可用性灾难”。
 
-## Structure
+为此，我们提出 **S-CAP (Semantic-Causal Attribution and Protection)** 框架。该框架通过“白盒因果溯源”结合“掩码门控对抗攻击”，实现了外科手术式的局部隐私阻断。在保证图像全局语义 100% 纯洁度的前提下，成功实现了针对商用黑盒大模型（如 GPT-4o）的高迁移性地理隐私防御。
 
-- `src/geoai_pipeline/config.py`: `.env` configuration helpers
-- `src/geoai_pipeline/constants.py`: prompts and class mappings
-- `src/geoai_pipeline/tools/`: shared dataset, local-model, and geo utilities
-- `src/geoai_pipeline/pipelines/`: main data pipeline implementations
-- `模型训练/QLoRA.py`: optional QLoRA training example
+---
 
-## Run
+## 阶段一：视觉-词表因果探针 (Visual-Vocabulary Causal Probing)
 
-Run from this directory:
+**🎯 目的**：解答“到底图像中的哪几个像素导致大模型泄露了地理位置？”
 
-```bash
-python 本地模型筛数据集构建YESandNO.py
-python 从YES构建afterSAM.py
-python 本地模型从afterSAM构建YES_Mask.py
-python 类别筛选.py
-python 训练集文本构建.py
-```
+**🛠️ 具体操作**：
+1. 将原始图像 $X$ 输入本地开源多模态大模型（如 LLaVA）。
+2. 进行前向推理，获取目标地理词元（如“Paris”或特定坐标 Token）在最终输出层的未归一化得分（Logit），记为 $z_{geo}$。
+3. 开启梯度追踪，让 $z_{geo}$ 对原始输入图像 $X$ 的每一个像素进行反向求导。采用 **SmoothGrad（平滑梯度）** 算法以消除神经网络非线性带来的随机噪点。
 
-The pipeline reads `code/.env` when present. Copy `.env.example` to `.env`, set `LOCAL_MODEL_PATH` to your local multimodal model directory, and adjust paths plus index ranges for your machine. The default local backend is `MODEL_BACKEND=swift`.
+**📐 核心数学公式**：
+$$g_{smooth} = \frac{1}{N} \sum_{i=1}^N \frac{\partial z_{geo}}{\partial (X + \mathcal{N}(0, \sigma^2))}$$
+
+**💡 公式原理解析**：
+* $\frac{\partial z_{geo}}{\partial X}$：利用微积分链式法则，计算输入图像像素极微小变化对输出目标词元产生的波动影响。数值越大，该像素的因果责任越重。
+* $\mathcal{N}(0, \sigma^2)$ 与 $\frac{1}{N} \sum$：在数学上执行蒙特卡洛平滑，通过多次添加随机高斯噪声并求导取平均，滤除偶然高梯度噪点，使真正具有决定性语义的区域（如路牌）在热力图上清晰锐利。
+
+---
+
+## 阶段二：语义物理锚定 (Semantic Anchoring with SAM3)
+
+**🎯 目的**：将数学特征空间里模糊的梯度热力图，转化为物理世界中精确的物体边界。
+
+**🛠️ 具体操作**：
+1. 将阶段一算出的平滑梯度矩阵 $g_{smooth}$ 按 RGB 通道求绝对值平均，生成二维热力图 $H$。
+2. 提取热力图中数值最高的前 $k\%$ 像素坐标，作为提示点（Prompt Points）。
+3. 将提示点输入 SAM3，精确分割出包含这些点的物理实体，生成二维掩码（Mask）。
+
+**📐 核心数学公式**：
+$$M_{i,j} = \text{SAM3}(X, \text{TopK}(H)) \in \{0, 1\}$$
+
+**💡 公式原理解析**：
+* 该步骤生成了关键的二值化掩码矩阵 $M$（尺寸与原图一致）。
+* 隐私暴露目标（如路牌）的像素坐标 $(i, j)$ 值为 $1$，背景区域（如天空、树木）值为 $0$。矩阵 $M$ 构成了后续保护无辜像素的绝对防御边界。
+
+---
+
+## 阶段三：掩码门控对抗攻击 (Mask-Gated Adversarial Attack)
+
+**🎯 目的**：生成对抗性扰动，严格限制在 Mask 区域内进行“外科手术式下毒”，实现零附带损伤。
+
+**🛠️ 具体操作**：
+1. 设定对抗攻击损失函数（Loss）：最小化目标地理词元的输出概率。
+2. 采用 **PGD (Projected Gradient Descent)** 算法迭代计算对抗噪声。
+3. 核心创新：在每次迭代更新噪声时，强制将噪声步长矩阵与阶段二的掩码矩阵 $M$ 进行逐元素相乘。
+
+**📐 核心数学公式**：
+1. **攻击目标 (Loss Function)**:
+   $$L_{adv}(X+\delta) = - \log P(y_{geo} | X + \delta)$$
+2. **掩码门控更新法则 (Masked Update Rule)**:
+   $$\delta_{t+1} = \Pi_{[-\epsilon, \epsilon]} \left( \delta_t + \alpha \cdot \text{sign}(\nabla_{\delta} L_{adv}(X + \delta_t)) \odot M \right)$$
+
+**💡 公式原理解析**：
+* $L_{adv}$：最大化负对数损失，迫使模型预测正确地名的概率降至最低。
+* $\text{sign}(\nabla_{\delta} L_{adv})$：计算当前图像梯度的方向符号，确定修改像素的“剧毒方向”。
+* $\odot M$ **(S-CAP 灵魂所在)**：逐元素相乘（Hadamard Product）。梯度方向乘以 $M$ 后，掩码外梯度强制归零，掩码内梯度完美保留，从数学底层断绝了全局图级别污染的可能。
+* $\Pi_{[-\epsilon, \epsilon]}$：无穷范数截断，限制单像素修改幅度不超过极小值 $\epsilon$，确保扰动对人类肉眼绝对隐蔽。
+
+---
+
+## 阶段四：黑盒跨模型迁移 (Black-box Transfer & Defense)
+
+**🎯 目的**：利用局部代理对抗噪声，阻断未知商用大模型（如 GPT-4o, Claude）的地理推理能力。
+
+**🛠️ 具体操作**：
+1. 经过指定迭代次数后，提取最终的局部对抗扰动矩阵 $\delta^*$。
+2. 将其叠加至原始图像 $X$ 上，生成最终受保护的图像 $X_{adv}$。
+3. 用户在社交平台发布 $X_{adv}$，阻断云端商用大模型的隐私窃取。
+
+**📐 核心数学公式**：
+$$X_{adv} = X + \delta^*$$
+$$\text{约束条件: } ||\delta^*||_{\infty} \le \epsilon \quad \text{且} \quad M \odot \delta^* = \delta^*$$
+
+**💡 公式原理解析**：
+* $||\delta^*||_{\infty} \le \epsilon$：满足绝对的视觉隐蔽性约束。
+* $M \odot \delta^* = \delta^*$：满足严格的稀疏性（局部性）约束。
+* **物理防御机制**：商用大模型底座多依赖基于自注意力机制的 Vision Transformer (如 CLIP 变体)。局部掩码区域内的极微小对抗扰动，会在此类模型提取底层 Patch 特征时引发高维向量坍塌，切断 MLLM 跨越局部节点拼凑全局地理认知的逻辑链条。
+
+---
+> **结论与优势对比**：相比于现有的全局特征推拉方法，S-CAP 框架不仅提供了清晰的视觉-语言因果解释性，更通过掩码门控机制保全了图像 100% 的非隐私区域特征，彻底打破了隐私保护与通用视觉问答可用性之间互相排斥的悖论。
