@@ -1,89 +1,102 @@
-# S-CAP: 语义因果归因与隐私保护框架
-**Semantic-Causal Attribution and Protection (S-CAP)**
+# PCI-CAP: 基于投影器空间对比反演的因果对抗保护框架
 
-## 核心摘要 (Abstract)
-针对当前多模态大语言模型（MLLM）在处理图像时容易泄露地理隐私的问题，现有的全局对抗扰动方法（如 GeoShield）虽然能掩盖位置信息，但会不可避免地破坏图像的全局细粒度特征，导致模型在执行通用视觉问答（VQA）时出现严重的“可用性灾难”。
-
-为此，我们提出 **S-CAP (Semantic-Causal Attribution and Protection)** 框架。该框架通过“白盒因果溯源”结合“掩码门控对抗攻击”，实现了外科手术式的局部隐私阻断。在保证图像全局语义 100% 纯洁度的前提下，成功实现了针对商用黑盒大模型（如 GPT-4o）的高迁移性地理隐私防御。
+**(Projector-space Contrastive Inversion for Causal Adversarial Protection)**
 
 ---
 
-## 阶段一：视觉-词表因果探针 (Visual-Vocabulary Causal Probing)
+## 核心摘要 (Abstract Highlights)
 
-**🎯 目的**：解答“到底图像中的哪几个像素导致大模型泄露了地理位置？”
+PCI-CAP 是一种针对多模态大语言模型（MLLM）的零监督、低损耗隐私保护框架。本框架突破了传统像素级对抗攻击中“计算昂贵”与“视觉噪音过载”的瓶颈，首次提出将防御阵地转移至 **LLM 语义咽喉处（Post-Projector Space）**。通过负向掩码反演（Learned Negative Masking）精准定位隐私泄露的语义元凶，并结合 SAM3 与物理距离阈值，实现了“恰好致盲”的极限低损耗图像保护。
 
-**🛠️ 具体操作**：
-1. 将原始图像 $X$ 输入本地开源多模态大模型（如 LLaVA）。
-2. 进行前向推理，获取目标地理词元（如“Paris”或特定坐标 Token）在最终输出层的未归一化得分（Logit），记为 $z_{geo}$。
-3. 开启梯度追踪，让 $z_{geo}$ 对原始输入图像 $X$ 的每一个像素进行反向求导。采用 **SmoothGrad（平滑梯度）** 算法以消除神经网络非线性带来的随机噪点。
+**三大核心优势：**
 
-**📐 核心数学公式**：
-$$g_{smooth} = \frac{1}{N} \sum_{i=1}^N \frac{\partial z_{geo}}{\partial (X + \mathcal{N}(0, \sigma^2))}$$
-
-**💡 公式原理解析**：
-* $\frac{\partial z_{geo}}{\partial X}$：利用微积分链式法则，计算输入图像像素极微小变化对输出目标词元产生的波动影响。数值越大，该像素的因果责任越重。
-* $\mathcal{N}(0, \sigma^2)$ 与 $\frac{1}{N} \sum$：在数学上执行蒙特卡洛平滑，通过多次添加随机高斯噪声并求导取平均，滤除偶然高梯度噪点，使真正具有决定性语义的区域（如路牌）在热力图上清晰锐利。
+1. **从像素到语义 (From Pixels to Semantics)**：在高维 Token 空间过滤低级视觉噪音，实现极高精度的因果归因。
+2. **极小化物理污染 (Minimal-Damage Protection)**：SAM3 物理结界结合真实地理距离裁判，将对抗噪声严格限制在致死目标内。
+3. **零真实标签依赖 (Zero-Ground-Truth Defense)**：利用模型自身的“第一直觉（伪标签）”作为靶点，完全适配用户本地部署的真实场景。
 
 ---
 
-## 阶段二：语义物理锚定 (Semantic Anchoring with SAM3)
+## 阶段一：系统初始化与靶标锚定 (System Initialization & Target Anchoring)
 
-**🎯 目的**：将数学特征空间里模糊的梯度热力图，转化为物理世界中精确的物体边界。
+本阶段在完全无监督（无真实 GPS 坐标）的前提下，获取代理模型的内部认知基准。
 
-**🛠️ 具体操作**：
-1. 将阶段一算出的平滑梯度矩阵 $g_{smooth}$ 按 RGB 通道求绝对值平均，生成二维热力图 $H$。
-2. 提取热力图中数值最高的前 $k\%$ 像素坐标，作为提示点（Prompt Points）。
-3. 将提示点输入 SAM3，精确分割出包含这些点的物理实体，生成二维掩码（Mask）。
-
-**📐 核心数学公式**：
-$$M_{i,j} = \text{SAM3}(X, \text{TopK}(H)) \in \{0, 1\}$$
-
-**💡 公式原理解析**：
-* 该步骤生成了关键的二值化掩码矩阵 $M$（尺寸与原图一致）。
-* 隐私暴露目标（如路牌）的像素坐标 $(i, j)$ 值为 $1$，背景区域（如天空、树木）值为 $0$。矩阵 $M$ 构成了后续保护无辜像素的绝对防御边界。
+* **输入**：原始待保护图像 $X$。
+* **流程**：将 $X$ 输入本地开源代理模型（Surrogate MLLM），进行纯前向自回归推理。
+* **输出**：提取模型输出的坐标序列作为**伪标签 (Pseudo-label)** $Y_{target}$（例如：`43.6426, -79.3870`）。该坐标在物理世界的绝对真伪并不重要，它是后续摧毁模型认知的唯一数学锚点。
 
 ---
 
-## 阶段三：掩码门控对抗攻击 (Mask-Gated Adversarial Attack)
+## 阶段二：语义空间因果反演 (Semantic-Space Causal Inversion)
 
-**🎯 目的**：生成对抗性扰动，严格限制在 Mask 区域内进行“外科手术式下毒”，实现零附带损伤。
+这是框架的核心创新层。抛弃像素级的正向加噪，在 LLM 接收视觉信号的“咽喉”处进行负向擦除。
 
-**🛠️ 具体操作**：
-1. 设定对抗攻击损失函数（Loss）：最小化目标地理词元的输出概率。
-2. 采用 **PGD (Projected Gradient Descent)** 算法迭代计算对抗噪声。
-3. 核心创新：在每次迭代更新噪声时，强制将噪声步长矩阵与阶段二的掩码矩阵 $M$ 进行逐元素相乘。
+### 1. 特征截获 (Feature Interception)
 
-**📐 核心数学公式**：
-1. **攻击目标 (Loss Function)**:
-   $$L_{adv}(X+\delta) = - \log P(y_{geo} | X + \delta)$$
-2. **掩码门控更新法则 (Masked Update Rule)**:
-   $$\delta_{t+1} = \Pi_{[-\epsilon, \epsilon]} \left( \delta_t + \alpha \cdot \text{sign}(\nabla_{\delta} L_{adv}(X + \delta_t)) \odot M \right)$$
+图像 $X$ 穿过 Vision Encoder 与 Projector 后，截获即将送入 LLM Decoder 的视觉 Token 矩阵：
 
-**💡 公式原理解析**：
-* $L_{adv}$：最大化负对数损失，迫使模型预测正确地名的概率降至最低。
-* $\text{sign}(\nabla_{\delta} L_{adv})$：计算当前图像梯度的方向符号，确定修改像素的“剧毒方向”。
-* $\odot M$ **(S-CAP 灵魂所在)**：逐元素相乘（Hadamard Product）。梯度方向乘以 $M$ 后，掩码外梯度强制归零，掩码内梯度完美保留，从数学底层断绝了全局图级别污染的可能。
-* $\Pi_{[-\epsilon, \epsilon]}$：无穷范数截断，限制单像素修改幅度不超过极小值 $\epsilon$，确保扰动对人类肉眼绝对隐蔽。
+
+$$Z = \{z_1, z_2, ..., z_N\}$$
+
+
+*(注：此时的 $Z$ 已转化为 LLM 可理解的高度抽象语义碎片)*
+
+### 2. 连续掩码初始化 (Mask Initialization)
+
+定义一个可学习的连续掩码向量 $M \in [0, 1]^N$，初始值全设为 1。将模型的实际视觉输入重构为门控状态：
+
+
+$$Z_{masked} = Z \odot M$$
+
+### 3. 反演优化 (The Inversion Objective)
+
+冻结大模型所有权重，使用 Adam 优化器仅更新掩码 $M$，最小化以下反演目标函数：
+
+
+$$\mathcal{L}_{inv} = -\text{CrossEntropy}(Y_{target} | Z_{masked}) + \lambda \|1 - M\|_1$$
+
+* **对抗项 (交叉熵)**：强迫模型无法输出伪标签 $Y_{target}$，瓦解其初始地理认知。
+* **稀疏正则项 (L1 惩罚)**：强迫 $M$ 尽可能保持为 1（即遮挡面积最小化），逼迫优化器寻找极其稀少的“致死 Token”。
+
+### 4. 死穴提取 (Fatal Token Extraction)
+
+优化收敛后，提取 $M$ 中权重逼近于 0 的索引位置（Index），即为导致地理隐私泄露的核心语义词元。
+
+---
+
+## 阶段三：跨模态降维与物理结界 (Cross-Modal Grounding & Physical Masking)
+
+将抽象的语义特征打回物理世界，建立精确的防泄漏隔离区。
+
+### 1. 网格逆映射 (Grid Back-projection)
+
+利用 Vision Transformer (ViT) 严格的空间序列守恒特性，将“致死 Token”的序列索引，通过下采样比例逆向映射回原图 $X$ 的二维像素坐标点 $(x, y)$。
+
+### 2. SAM3 语义切割 (Semantic Segmentation via SAM3)
+
+将上述 $(x, y)$ 坐标集合作为提示点（Prompt Points）输入 Segment Anything Model 3 (SAM3)。SAM3 输出包含该坐标的精确物理边界，生成**二维二值化物理掩码矩阵 $M_{phys}$**（例如：精确剥离出图像中的某块路牌）。
 
 ---
 
-## 阶段四：黑盒跨模型迁移 (Black-box Transfer & Defense)
+## 阶段四：掩码门控毒药与物理裁判 (Masked Poisoning & Physical Early-Stopping)
 
-**🎯 目的**：利用局部代理对抗噪声，阻断未知商用大模型（如 GPT-4o, Claude）的地理推理能力。
+回到传统的像素端对抗攻击，利用物理裁判实现一击脱离。
 
-**🛠️ 具体操作**：
-1. 经过指定迭代次数后，提取最终的局部对抗扰动矩阵 $\delta^*$。
-2. 将其叠加至原始图像 $X$ 上，生成最终受保护的图像 $X_{adv}$。
-3. 用户在社交平台发布 $X_{adv}$，阻断云端商用大模型的隐私窃取。
+### 1. 掩码定向下毒 (Mask-Gated Adversarial Perturbation)
 
-**📐 核心数学公式**：
-$$X_{adv} = X + \delta^*$$
-$$\text{约束条件: } ||\delta^*||_{\infty} \le \epsilon \quad \text{且} \quad M \odot \delta^* = \delta^*$$
+启动 PGD (Projected Gradient Descent) 对抗迭代。每次计算出的对抗梯度 $\nabla_X \mathcal{L}$ 必须受到物理结界的严格限制：
 
-**💡 公式原理解析**：
-* $||\delta^*||_{\infty} \le \epsilon$：满足绝对的视觉隐蔽性约束。
-* $M \odot \delta^* = \delta^*$：满足严格的稀疏性（局部性）约束。
-* **物理防御机制**：商用大模型底座多依赖基于自注意力机制的 Vision Transformer (如 CLIP 变体)。局部掩码区域内的极微小对抗扰动，会在此类模型提取底层 Patch 特征时引发高维向量坍塌，切断 MLLM 跨越局部节点拼凑全局地理认知的逻辑链条。
 
----
-> **结论与优势对比**：相比于现有的全局特征推拉方法，S-CAP 框架不仅提供了清晰的视觉-语言因果解释性，更通过掩码门控机制保全了图像 100% 的非隐私区域特征，彻底打破了隐私保护与通用视觉问答可用性之间互相排斥的悖论。
+$$\delta_{t+1} = \Pi_{\epsilon} \left( \delta_t + \alpha \cdot \text{sign}(\nabla_X \mathcal{L}) \odot M_{phys} \right)$$
+
+
+确保对抗噪声 100% 倾泻于目标物体，绝对保护背景像素（天空、建筑）的画质。
+
+### 2. 物理距离裁判 (Physical Haversine Early-Stopping)
+
+* **监控机制**：在迭代过程中，每注入一次噪声，代理模型重新生成一次预测坐标 $Y_{current}$。
+* **悬崖触发**：调用半正矢公式（Haversine Formula）计算 $Y_{current}$ 与初始伪标签 $Y_{target}$ 之间的地球球面距离 $\Delta \text{Distance}$。
+* **一击脱离**：一旦 $\Delta \text{Distance} > \tau$（例如 $\tau = 50\text{km}$），立刻强制终止迭代循环（Break）。
+
+### 3. 黑盒致盲迁移 (Black-box Transferability)
+
+输出最终的受保护图像 $X_{adv}$。由于主流大模型（如 GPT-4o, Claude 3.5）底层共享相似的视觉注意力和 OCR 处理机制，$X_{adv}$ 将成功引发跨模型的定位认知崩溃。
