@@ -1,102 +1,38 @@
-# PCI-CAP: 基于投影器空间对比反演的因果对抗保护框架
 
-**(Projector-space Contrastive Inversion for Causal Adversarial Protection)**
-
----
-
-## 核心摘要 (Abstract Highlights)
-
-PCI-CAP 是一种针对多模态大语言模型（MLLM）的零监督、低损耗隐私保护框架。本框架突破了传统像素级对抗攻击中“计算昂贵”与“视觉噪音过载”的瓶颈，首次提出将防御阵地转移至 **LLM 语义咽喉处（Post-Projector Space）**。通过负向掩码反演（Learned Negative Masking）精准定位隐私泄露的语义元凶，并结合 SAM3 与物理距离阈值，实现了“恰好致盲”的极限低损耗图像保护。
-
-**三大核心优势：**
-
-1. **从像素到语义 (From Pixels to Semantics)**：在高维 Token 空间过滤低级视觉噪音，实现极高精度的因果归因。
-2. **极小化物理污染 (Minimal-Damage Protection)**：SAM3 物理结界结合真实地理距离裁判，将对抗噪声严格限制在致死目标内。
-3. **零真实标签依赖 (Zero-Ground-Truth Defense)**：利用模型自身的“第一直觉（伪标签）”作为靶点，完全适配用户本地部署的真实场景。
-
----
-
-## 阶段一：系统初始化与靶标锚定 (System Initialization & Target Anchoring)
-
-本阶段在完全无监督（无真实 GPS 坐标）的前提下，获取代理模型的内部认知基准。
-
-* **输入**：原始待保护图像 $X$。
-* **流程**：将 $X$ 输入本地开源代理模型（Surrogate MLLM），进行纯前向自回归推理。
-* **输出**：提取模型输出的坐标序列作为**伪标签 (Pseudo-label)** $Y_{target}$（例如：`43.6426, -79.3870`）。该坐标在物理世界的绝对真伪并不重要，它是后续摧毁模型认知的唯一数学锚点。
-
----
-
-## 阶段二：语义空间因果反演 (Semantic-Space Causal Inversion)
-
-这是框架的核心创新层。抛弃像素级的正向加噪，在 LLM 接收视觉信号的“咽喉”处进行负向擦除。
-
-### 1. 特征截获 (Feature Interception)
-
-图像 $X$ 穿过 Vision Encoder 与 Projector 后，截获即将送入 LLM Decoder 的视觉 Token 矩阵：
-
-
-$$Z = \{z_1, z_2, ..., z_N\}$$
-
-
-*(注：此时的 $Z$ 已转化为 LLM 可理解的高度抽象语义碎片)*
-
-### 2. 连续掩码初始化 (Mask Initialization)
-
-定义一个可学习的连续掩码向量 $M \in [0, 1]^N$，初始值全设为 1。将模型的实际视觉输入重构为门控状态：
-
-
-$$Z_{masked} = Z \odot M$$
-
-### 3. 反演优化 (The Inversion Objective)
-
-冻结大模型所有权重，使用 Adam 优化器仅更新掩码 $M$，最小化以下反演目标函数：
-
-
-$$\mathcal{L}_{inv} = -\text{CrossEntropy}(Y_{target} | Z_{masked}) + \lambda \|1 - M\|_1$$
-
-* **对抗项 (交叉熵)**：强迫模型无法输出伪标签 $Y_{target}$，瓦解其初始地理认知。
-* **稀疏正则项 (L1 惩罚)**：强迫 $M$ 尽可能保持为 1（即遮挡面积最小化），逼迫优化器寻找极其稀少的“致死 Token”。
-
-### 4. 死穴提取 (Fatal Token Extraction)
-
-优化收敛后，提取 $M$ 中权重逼近于 0 的索引位置（Index），即为导致地理隐私泄露的核心语义词元。
-
----
-
-## 阶段三：跨模态降维与物理结界 (Cross-Modal Grounding & Physical Masking)
-
-将抽象的语义特征打回物理世界，建立精确的防泄漏隔离区。
-
-### 1. 网格逆映射 (Grid Back-projection)
-
-利用 Vision Transformer (ViT) 严格的空间序列守恒特性，将“致死 Token”的序列索引，通过下采样比例逆向映射回原图 $X$ 的二维像素坐标点 $(x, y)$。
-
-### 2. SAM3 语义切割 (Semantic Segmentation via SAM3)
-
-将上述 $(x, y)$ 坐标集合作为提示点（Prompt Points）输入 Segment Anything Model 3 (SAM3)。SAM3 输出包含该坐标的精确物理边界，生成**二维二值化物理掩码矩阵 $M_{phys}$**（例如：精确剥离出图像中的某块路牌）。
-
----
-
-## 阶段四：掩码门控毒药与物理裁判 (Masked Poisoning & Physical Early-Stopping)
-
-回到传统的像素端对抗攻击，利用物理裁判实现一击脱离。
-
-### 1. 掩码定向下毒 (Mask-Gated Adversarial Perturbation)
-
-启动 PGD (Projected Gradient Descent) 对抗迭代。每次计算出的对抗梯度 $\nabla_X \mathcal{L}$ 必须受到物理结界的严格限制：
-
-
-$$\delta_{t+1} = \Pi_{\epsilon} \left( \delta_t + \alpha \cdot \text{sign}(\nabla_X \mathcal{L}) \odot M_{phys} \right)$$
-
-
-确保对抗噪声 100% 倾泻于目标物体，绝对保护背景像素（天空、建筑）的画质。
-
-### 2. 物理距离裁判 (Physical Haversine Early-Stopping)
-
-* **监控机制**：在迭代过程中，每注入一次噪声，代理模型重新生成一次预测坐标 $Y_{current}$。
-* **悬崖触发**：调用半正矢公式（Haversine Formula）计算 $Y_{current}$ 与初始伪标签 $Y_{target}$ 之间的地球球面距离 $\Delta \text{Distance}$。
-* **一击脱离**：一旦 $\Delta \text{Distance} > \tau$（例如 $\tau = 50\text{km}$），立刻强制终止迭代循环（Break）。
-
-### 3. 黑盒致盲迁移 (Black-box Transferability)
-
-输出最终的受保护图像 $X_{adv}$。由于主流大模型（如 GPT-4o, Claude 3.5）底层共享相似的视觉注意力和 OCR 处理机制，$X_{adv}$ 将成功引发跨模型的定位认知崩溃。
+# 基于语义重定向与局部物理掩码的地理隐私保护框架
+本框架旨在解决多模态大模型（VLM）时代的图像地理隐私泄露问题。通过因果特征提取、精准区域分割、独立语义伪装及局部对抗优化四个阶段，实现在极小像素修改代价下，误导大模型的地理定位判断，同时不破坏图像的常规视觉问答（VQA）效用。
+## 阶段一：因果特征提取 (Causal Feature Extraction)
+利用目标 VLM 的“思维链（Chain-of-Thought）”机制，直接获取其判定地理位置的核心视觉证据。
+ 1. **输入阶段**：将原始图像和地理定位指令（Prompt）输入目标 VLM。
+ 2. **位置预测**：VLM 输出预测的地理坐标（经纬度）或地名。
+ 3. **因果溯源**：强制 VLM 输出得出该定位结论所依赖的“目标名词集合”（例如：["韩文路牌", "亚洲现代建筑", "靠左行驶的车辆"]）。这些名词即为后续攻击的**核心锚点**。
+## 阶段二：物理空间锚定 (Physical Space Anchoring)
+将提取出的抽象文本名词，映射为图像上具体的物理像素区域。
+ 1. **边界框生成**：将目标名词集合输入 GroundingDINO，精准框选出对应实体的边界框（Bounding Boxes）。
+ 2. **掩码生成**：将边界框输入 SAM (Segment Anything Model)，生成精确到像素级别的多边形实体掩码（Masks）。
+   * *优势*：该步骤获取的是离散的物理对象区域，将后续对抗攻击的动作空间从“全图像素”大幅降维至“关键实体像素”。
+## 阶段三：语义伪装生成 (Semantic Decoy Generation)
+构建误导性的目标特征，实现“保活实体属性，毒化地理属性”。
+ 1. **大模型重写**：将提取出的目标名词及其详细描述输入 LLM。
+ 2. **定点替换**：指令 LLM 在**绝对保留基础名词语义**的前提下，将其附带的地理、风格等形容词替换为**最不相关（或跨地域冲突）**的描述。
+   * *示例 1*："韩文路牌" \rightarrow "英文路牌"
+   * *示例 2*："亚洲现代建筑" \rightarrow "欧洲哥特式建筑"
+ 3. **文本特征编码**：利用 CLIP 文本编码器，将这些新生成的伪装描述转化为高维特征向量，作为后续优化的目标锚点（T_{decoy}）。
+## 阶段四：对抗噪声注入与联合优化 (Adversarial Optimization)
+在特定的掩码区域内施加对抗噪声，拉近局部特征与伪装特征的距离。这种纯代数层面的矩阵寻优，完全摒弃了连续流或扩散模型中繁杂的 PDE 求解过程，训练过程轻量且迅速。
+ 1. **局部独立加噪**：针对 SAM 框选出的每一个实体区域 i，初始化独立的对抗噪声张量 \delta_i。
+ 2. **全局联合回传**：将所有加噪后的局部区域整合回原图，输入 CLIP 视觉编码器得到局部特征 Z_{adv\_local\_i}。
+ 3. **损失函数计算**：构建基于余弦相似度的联合损失函数，促使加噪区域在特征空间上靠近对应的伪装语义：
+   
+ 4. **梯度更新**：通过优化器（如 Adam / PGD）反向传播更新所有的噪声矩阵 \delta_i，直至收敛。
+## 阶段五：客观三维评价体系 (Objective Evaluation)
+从隐私、效用和隐蔽性三个维度，对加噪后的最终图像进行全面评估。
+### 1. 隐私保护度 (Privacy Protection)
+ * **绝对物理偏移量 (Geodesic Distance)**：通过哈弗赛因公式计算原图预测坐标与对抗图预测坐标在地球表面的真实距离误差。
+ * **地理类别错判率 (Categorical Error Rate)**：统计模型预测结果发生国家级或洲际跨越的成功比例。
+### 2. 视觉效用保留度 (Utility Retention)
+ * **基础特征相似度**：计算加噪局部区域与“剥离地理属性的纯名词文本”（如 "street sign"）的 CLIP 特征余弦相似度，证明其实体概念未被破坏。
+ * **常识 VQA 保活率**：使用通用视觉问答测试集（涉及颜色、计数、基础认知），对比加噪前后模型的准确率变化（目标为下降幅度极小）。
+### 3. 视觉隐蔽性 (Visual Stealthiness)
+ * **LPIPS 感知差异**：计算加噪图与原图的 LPIPS 分数，由于采取了精准局部掩码策略，该分数应显著优于传统的全图加噪方法。
+ * **噪声能量范数**：统计局部区域注入噪声的 L_2 与 L_\infty 范数，量化像素修改代价。
