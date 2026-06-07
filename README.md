@@ -1,102 +1,107 @@
-# PCI-CAP: 基于投影器空间对比反演的因果对抗保护框架
 
-**(Projector-space Contrastive Inversion for Causal Adversarial Protection)**
+# DCSD-2.0: 物理感知的可微因果子集发现
 
----
+**Physically-Aware Differentiable Causal Subset Discovery for VLM Geolocation**
 
-## 核心摘要 (Abstract Highlights)
+## 1. 架构总览 (Architecture Overview)
 
-PCI-CAP 是一种针对多模态大语言模型（MLLM）的零监督、低损耗隐私保护框架。本框架突破了传统像素级对抗攻击中“计算昂贵”与“视觉噪音过载”的瓶颈，首次提出将防御阵地转移至 **LLM 语义咽喉处（Post-Projector Space）**。通过负向掩码反演（Learned Negative Masking）精准定位隐私泄露的语义元凶，并结合 SAM3 与物理距离阈值，实现了“恰好致盲”的极限低损耗图像保护。
-
-**三大核心优势：**
-
-1. **从像素到语义 (From Pixels to Semantics)**：在高维 Token 空间过滤低级视觉噪音，实现极高精度的因果归因。
-2. **极小化物理污染 (Minimal-Damage Protection)**：SAM3 物理结界结合真实地理距离裁判，将对抗噪声严格限制在致死目标内。
-3. **零真实标签依赖 (Zero-Ground-Truth Defense)**：利用模型自身的“第一直觉（伪标签）”作为靶点，完全适配用户本地部署的真实场景。
+本算法旨在解答：“在多模态大模型（VLM）进行地理定位时，图像中的哪些特定物理目标构成了模型预测经纬度的**核心因果锚点**？”
+为突破离散组合搜索的算力瓶颈与传统交叉熵无视物理距离的缺陷，本架构将目标遮挡过程**连续化**，并将地球大圆距离测量**可微化**，实现端到端的黑盒特征寻根。
 
 ---
 
-## 阶段一：系统初始化与靶标锚定 (System Initialization & Target Anchoring)
+## 2. 第一阶段：离散目标提取与连续化松弛 (Initialization & Relaxation)
 
-本阶段在完全无监督（无真实 GPS 坐标）的前提下，获取代理模型的内部认知基准。
+### 2.1 先验目标池化 (Object Grounding)
 
-* **输入**：原始待保护图像 $X$。
-* **流程**：将 $X$ 输入本地开源代理模型（Surrogate MLLM），进行纯前向自回归推理。
-* **输出**：提取模型输出的坐标序列作为**伪标签 (Pseudo-label)** $Y_{target}$（例如：`43.6426, -79.3870`）。该坐标在物理世界的绝对真伪并不重要，它是后续摧毁模型认知的唯一数学锚点。
+1. **启发式发现：** 给定原图 $I$，利用 VLM 的思维链（CoT）输出定位依据，提取出 $N$ 个显著的地理实体名词。
+2. **掩码生成：** 将名词输入 Segment Anything (SAM)，获取 $N$ 个绝对离散的二进制掩码矩阵集合：
 
----
-
-## 阶段二：语义空间因果反演 (Semantic-Space Causal Inversion)
-
-这是框架的核心创新层。抛弃像素级的正向加噪，在 LLM 接收视觉信号的“咽喉”处进行负向擦除。
-
-### 1. 特征截获 (Feature Interception)
-
-图像 $X$ 穿过 Vision Encoder 与 Projector 后，截获即将送入 LLM Decoder 的视觉 Token 矩阵：
+$$\mathcal{M} = \{M_1, M_2, \dots, M_N\}, \quad M_i \in \{0, 1\}^{H \times W}$$
 
 
-$$Z = \{z_1, z_2, ..., z_N\}$$
+
+### 2.2 遮挡权重的连续化映射 (Continuous Relaxation)
+
+为每个掩码 $M_i$ 声明一个可学习的标量参数 $\alpha_i$。在整个优化过程中，**大模型的全部参数被冻结，仅有 $\alpha$ 参与梯度更新**。
+将 $\alpha_i$ 经过 Sigmoid 激活，生成 $[0, 1]$ 之间的连续遮挡概率 $p_i$：
 
 
-*(注：此时的 $Z$ 已转化为 LLM 可理解的高度抽象语义碎片)*
-
-### 2. 连续掩码初始化 (Mask Initialization)
-
-定义一个可学习的连续掩码向量 $M \in [0, 1]^N$，初始值全设为 1。将模型的实际视觉输入重构为门控状态：
+$$p_i = \text{Sigmoid}(\alpha_i)$$
 
 
-$$Z_{masked} = Z \odot M$$
-
-### 3. 反演优化 (The Inversion Objective)
-
-冻结大模型所有权重，使用 Adam 优化器仅更新掩码 $M$，最小化以下反演目标函数：
+利用广播机制（Broadcasting），将原始图像 $I$ 与加权后的掩码组合进行融合，生成具有半透明/灰色遮挡层的合成输入图像 $I_{input}$：
 
 
-$$\mathcal{L}_{inv} = -\text{CrossEntropy}(Y_{target} | Z_{masked}) + \lambda \|1 - M\|_1$$
-
-* **对抗项 (交叉熵)**：强迫模型无法输出伪标签 $Y_{target}$，瓦解其初始地理认知。
-* **稀疏正则项 (L1 惩罚)**：强迫 $M$ 尽可能保持为 1（即遮挡面积最小化），逼迫优化器寻找极其稀少的“致死 Token”。
-
-### 4. 死穴提取 (Fatal Token Extraction)
-
-优化收敛后，提取 $M$ 中权重逼近于 0 的索引位置（Index），即为导致地理隐私泄露的核心语义词元。
+$$I_{input} = I \odot (1 - \sum_{i=1}^{N} p_i \cdot M_i)$$
 
 ---
 
-## 阶段三：跨模态降维与物理结界 (Cross-Modal Grounding & Physical Masking)
+## 3. 第二阶段：物理感知的期望标记损失 (Physically-Aware Token Loss)
 
-将抽象的语义特征打回物理世界，建立精确的防泄漏隔离区。
+将 $I_{input}$ 与提问提示词（Prompt）喂给 VLM。采用 **Teacher Forcing** 机制，强制将真实的经纬度坐标字符串 $Y_{true} = [y_1, y_2, \dots, y_m]$ 喂入解码器（Decoder）。
 
-### 1. 网格逆映射 (Grid Back-projection)
+### 3.1 暴力逻辑阉割 (Logit Masking)
 
-利用 Vision Transformer (ViT) 严格的空间序列守恒特性，将“致死 Token”的序列索引，通过下采样比例逆向映射回原图 $X$ 的二维像素坐标点 $(x, y)$。
+在 VLM 输出每一位字符的 Logits 时，由于非数字 Token 会破坏距离计算，我们在 Softmax 之前进行掩码拦截。
+定义合法字符集 $\mathcal{V}_{num} = \{0..9, ., -, ,\}$。对于词表中的第 $k$ 个 Token $v_k$：
 
-### 2. SAM3 语义切割 (Semantic Segmentation via SAM3)
+$$\text{Logit}'_{k} = 
+\begin{cases} 
+\text{Logit}_{k}, & \text{if } v_k \in \mathcal{V}_{num} \\
+-\infty, & \text{otherwise}
+\end{cases}$$
 
-将上述 $(x, y)$ 坐标集合作为提示点（Prompt Points）输入 Segment Anything Model 3 (SAM3)。SAM3 输出包含该坐标的精确物理边界，生成**二维二值化物理掩码矩阵 $M_{phys}$**（例如：精确剥离出图像中的某块路牌）。
+经过 Softmax 后，所有非数字字符的概率被绝对锁死为 0。模型被迫输出长度为 13（或等同于 $\mathcal{V}_{num}$ 大小）的概率向量 $\mathbf{P}_t$。
+
+### 3.2 物理距离矩阵构建 (The 111km/Cosine Distance Matrix)
+
+针对真实序列中的第 $t$ 个位置（假设其真实数字为 $y_t$，科学指数/位数权重为 $E_t$），我们根据 **WGS-84 测绘标准**，构建一个固定常数构成的距离惩罚向量 $D_t$。
+对于合法的数字候选词 $v_j \in \{0..9\}$：
+
+* **如果当前预测的是纬度 (Latitude)：**
+
+$$D_{t, j}^{(lat)} = |v_j - y_t| \times 10^{E_t} \times 111$$
+
+
+* **如果当前预测的是经度 (Longitude)：**
+引入高纬度经线收缩的余弦惩罚机制（其中 $\text{Lat}_{true}$ 为真实纬度）：
+
+$$D_{t, j}^{(lon)} = |v_j - y_t| \times 10^{E_t} \times 111 \times \cos(\text{Lat}_{true})$$
+
+
+
+*(对于小数点、逗号等符号位，若模型猜错，设定一个统一的常量惩罚值 $M$)*
+
+### 3.3 可微期望距离点积 (Differentiable Expected Distance)
+
+将模型输出的概率分布 $\mathbf{P}_t$ 与写死的物理距离矩阵 $D_t$ 进行点积，计算出该位置上产生的**预期物理偏差（公里数）**：
+
+
+$$L_{dist\_t} = \sum_{j \in \mathcal{V}_{num}} P(v_j \mid I_{input}, y_{<t}) \cdot D_{t, j}$$
 
 ---
 
-## 阶段四：掩码门控毒药与物理裁判 (Masked Poisoning & Physical Early-Stopping)
+## 4. 第三阶段：目标函数与离散化 (Optimization & Binarization)
 
-回到传统的像素端对抗攻击，利用物理裁判实现一击脱离。
+### 4.1 最终损失函数的设计
 
-### 1. 掩码定向下毒 (Mask-Gated Adversarial Perturbation)
-
-启动 PGD (Projected Gradient Descent) 对抗迭代。每次计算出的对抗梯度 $\nabla_X \mathcal{L}$ 必须受到物理结界的严格限制：
+为了寻找能够导致最大定位破坏的**最少**目标组合，总损失函数定义为：
 
 
-$$\delta_{t+1} = \Pi_{\epsilon} \left( \delta_t + \alpha \cdot \text{sign}(\nabla_X \mathcal{L}) \odot M_{phys} \right)$$
+$$L_{total} = \lambda \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} L_{dist\_t}$$
 
+* **第一项（L1 稀疏正则化）：** $\sum p_i$ 迫使非必要目标的遮挡概率趋近于 0（即保留原图）。
+* **第二项（负期望距离和）：** 我们通过**最小化负距离**（等同于最大化正距离），驱使梯度去寻找让模型坐标预测偏离最离谱的遮挡组合。
 
-确保对抗噪声 100% 倾泻于目标物体，绝对保护背景像素（天空、建筑）的画质。
+### 4.2 反向传播与最终阈值切割
 
-### 2. 物理距离裁判 (Physical Haversine Early-Stopping)
+1. 调用 `L_total.backward()`。误差梯度从坐标距离出发，穿过冻结的 VLM 神经网络，落回图像并精确更新 $\alpha$ 参数。
+2. 使用 Adam 优化器迭代 30~50 步，直到 Loss 收敛。
+3. **二值化输出：** 设定硬阈值 $\tau = 0.5$。若 $p_i > \tau$，则将其视为“核心因果目标”，在输出图中将其涂为 100% 纯黑；若 $p_i \le \tau$，则恢复原图。
 
-* **监控机制**：在迭代过程中，每注入一次噪声，代理模型重新生成一次预测坐标 $Y_{current}$。
-* **悬崖触发**：调用半正矢公式（Haversine Formula）计算 $Y_{current}$ 与初始伪标签 $Y_{target}$ 之间的地球球面距离 $\Delta \text{Distance}$。
-* **一击脱离**：一旦 $\Delta \text{Distance} > \tau$（例如 $\tau = 50\text{km}$），立刻强制终止迭代循环（Break）。
+---
 
-### 3. 黑盒致盲迁移 (Black-box Transferability)
+> **核心工程优势：** 本架构无需修改任何 VLM 底层源码，无需预训练任何分类头。仅需一次前向传播即可完成极其复杂的地球物理感知梯度计算，将 $O(2^N)$ 的搜索复杂度降维打击至 $O(1)$ 的连续优化，速度极快且极具物理可解释性。
 
-输出最终的受保护图像 $X_{adv}$。由于主流大模型（如 GPT-4o, Claude 3.5）底层共享相似的视觉注意力和 OCR 处理机制，$X_{adv}$ 将成功引发跨模型的定位认知崩溃。
+---
