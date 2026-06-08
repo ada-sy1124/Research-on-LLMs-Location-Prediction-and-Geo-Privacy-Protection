@@ -49,7 +49,8 @@ $$I_{input} = I \odot (1 - \sum_{i=1}^{N} p_i \cdot M_i)$$
 定义合法字符集 $\mathcal{V}_{num} = \{0..9, ., -, ,\}$。对于词表中的第 $k$ 个 Token $v_k$：
 
 
-$$\text{Logit}'_{k} = \begin{cases} \text{Logit}_{k}, & \text{if } v_k \in \mathcal{V}_{num} \\ -\infty, & \text{otherwise} \end{cases}$$
+$$\text{Logit}'_{k} = \begin{cases} \text{Logit}_{k}, & \text{if } v_k \in \mathcal{V}_{num} \\ 
+-\infty, & \text{otherwise} \end{cases}$$
 
 
 经过 Softmax 后，模型被迫输出长度为 13 的纯净概率向量 $\mathbf{P}_t$。
