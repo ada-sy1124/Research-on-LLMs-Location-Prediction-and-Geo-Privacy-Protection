@@ -55,7 +55,8 @@ $$\mathcal{M} = \{M_1, M_2, \dots, M_N\}, \quad M_i \in \{0, 1\}^{H \times W}$$
 
 
 同时轮廓的保护也非常重要，模型很多情况下可以通过精确分割的轮廓猜到这是一个什么东西，以下是一个典型例子：
-<img width="768" height="1024" alt="image" src="https://github.com/user-attachments/assets/d49b89fb-42d0-43fb-b53d-7b6bf280c6f7" />
+<img width="384" height="512" alt="image" src="https://github.com/user-attachments/assets/d49b89fb-42d0-43fb-b53d-7b6bf280c6f7" />
+
 下面是大模型的回复：
 
 Macro: ['dense coniferous forest', 'calm turquoise lake', 'wooden dock structure']
