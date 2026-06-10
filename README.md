@@ -203,9 +203,18 @@ $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE,
 
 ### Core Purpose
 
-This algorithm aims to solve the **black-box interpretability problem** in VLM geolocation: Through end-to-end backpropagation, it precisely reverse-engineers which specific physical entities (causal anchors) in the image determine the model's latitude and longitude predictions.
+This algorithm aims to solve the **black-box interpretability problem** in VLM geolocation: Through end-to-end backpropagation, it reverse-engineers which specific physical entities (causal anchors) in the image determine the model's location predictions.
 
 ---
+
+
+
+### Main Logic and Implementation Method
+
+The entire workflow can be summarized into four core steps: **Candidate Discovery $\rightarrow$ Continuous Masking $\rightarrow$ Destructive Evaluation $\rightarrow$ Gradient Optimization**.
+
+* **Step 1: Object Extraction and Continuous Relaxation (Preparation Phase)**
+Utilize the VLM to extract landmark nouns from the image, and generate corresponding discrete region masks using Segment Anything (SAM). To allow these discrete masks to participate in the neural network's gradient computation, learnable parameters are introduced to transform them into continuous masking probabilities between $[0, 1]$.
 
 ```test
 **Role Definition:**
@@ -240,16 +249,12 @@ Please output strictly in JSON format. Do not include any additional explanatory
 }
 ```
 
-### Main Logic and Implementation Method
-
-The entire workflow can be summarized into four core steps: **Candidate Discovery $\rightarrow$ Continuous Masking $\rightarrow$ Destructive Evaluation $\rightarrow$ Gradient Optimization**.
-
-* **Step 1: Object Extraction and Continuous Relaxation (Preparation Phase)**
-Utilize the VLM (guided by Hierarchical Spatial Prompting) to extract landmark nouns from the image, and generate corresponding discrete region masks using Segment Anything (SAM). To allow these discrete masks to participate in the neural network's gradient computation, learnable parameters are introduced to transform them into continuous masking probabilities between $[0, 1]$.
 * **Step 2: Forward Prediction and Logit Masking (Intervention Phase)**
-Feed the composite image with probabilistic masking into the VLM, and forcibly input the true latitude and longitude coordinates (**Teacher Forcing**). Simultaneously, mask the probabilities of all non-numeric characters at the output logits to ensure the absolute purity of the physical distance calculation.
+Feed the composite image with probabilistic masking into the VLM, and input the true location coordinates (**Teacher Forcing**). Simultaneously, mask the probabilities of all non-numeric characters at the output logits to ensure the absolute purity of the physical distance calculation.
+
 * **Step 3: Dual-Engine Causal Evaluation (Computation Phase)**
-This is the core of the algorithm. When a target is masked, the system evaluates its "destructive power" on the final localization in two ways: first, the native **Cross-Entropy Loss** (to shatter the model's confidence); second, a normalized **physical penalty based on the Earth's great-circle distance** (to evaluate the spatial coordinate deviation).
+This is the core of the algorithm. When a target is masked, the system evaluates its "destructive power" on the final localization in two ways: first, the native **Cross-Entropy Loss** (to shatter the model's confidence); second, a normalized **physical punish based on the Earth's great-circle distance** (to evaluate the spatial coordinate deviation).
+
 * **Step 4: Magnitude Alignment and Backpropagation (Optimization Phase)**
 Combine sparse regularization, cross-entropy destruction, and physical distance alignment into the final loss function. Freeze all parameters of the VLM, and only update the mask occlusion probabilities via gradient descent. Ultimately, the targets whose occlusion causes a sharp spike in localization loss will have their mask probabilities optimized and retained, becoming the core causal anchors we seek.
 
@@ -257,7 +262,7 @@ Combine sparse regularization, cross-entropy destruction, and physical distance 
 
 ### Core Mathematical Formulas
 
-The operation of the algorithm relies on the following key mathematical expressions:
+The operation of the algorithm rely on the following key mathematical expressions:
 
 **1. Continuous Relaxation**
 Control the masking degree of the $i$-th target via a learnable parameter $\alpha_i$, transforming it into a smooth, differentiable probability:
