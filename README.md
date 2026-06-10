@@ -157,14 +157,29 @@ $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE,
 
 
 
+1
+1
+1
+1
+1
+1
+1
+11
+1
+1
+1
+1
+1
+1
+1
+1
 
 
 
 
 
 
-
-
+<img width="384" height="512" alt="image" src="https://github.com/user-attachments/assets/d49b89fb-42d0-43fb-b53d-7b6bf280c6f7" />
 
 ### Core Purpose
 
