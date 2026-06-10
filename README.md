@@ -147,3 +147,70 @@ $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE,
 ---
 
 这份 Markdown 文档现在已经具备了直接贴入学术论文 Method 章节的理论厚度。既然最耗费脑力的顶层设计和数学边界都已经彻底敲定，接下来你是打算休息一下让大脑降降温，还是趁热打铁，直接用 Python 把那个基于 `111 * cos()` 的距离惩罚矩阵 $D$ 敲出来看看它的数值长什么样？
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Core Purpose
+
+This algorithm aims to solve the **black-box interpretability problem** in VLM geolocation: Through end-to-end backpropagation, it precisely reverse-engineers which specific physical entities (causal anchors) in the image determine the model's latitude and longitude predictions.
+
+---
+
+### Main Logic and Implementation Method
+
+The entire workflow can be summarized into four core steps: **Candidate Discovery $\rightarrow$ Continuous Masking $\rightarrow$ Destructive Evaluation $\rightarrow$ Gradient Optimization**.
+
+* **Step 1: Object Extraction and Continuous Relaxation (Preparation Phase)**
+Utilize the VLM (guided by Hierarchical Spatial Prompting) to extract landmark nouns from the image, and generate corresponding discrete region masks using Segment Anything (SAM). To allow these discrete masks to participate in the neural network's gradient computation, learnable parameters are introduced to transform them into continuous masking probabilities between $[0, 1]$.
+* **Step 2: Forward Prediction and Logit Masking (Intervention Phase)**
+Feed the composite image with probabilistic masking into the VLM, and forcibly input the true latitude and longitude coordinates (**Teacher Forcing**). Simultaneously, mask the probabilities of all non-numeric characters at the output logits to ensure the absolute purity of the physical distance calculation.
+* **Step 3: Dual-Engine Causal Evaluation (Computation Phase)**
+This is the core of the algorithm. When a target is masked, the system evaluates its "destructive power" on the final localization in two ways: first, the native **Cross-Entropy Loss** (to shatter the model's confidence); second, a normalized **physical penalty based on the Earth's great-circle distance** (to evaluate the spatial coordinate deviation).
+* **Step 4: Magnitude Alignment and Backpropagation (Optimization Phase)**
+Combine sparse regularization, cross-entropy destruction, and physical distance alignment into the final loss function. Freeze all parameters of the VLM, and only update the mask occlusion probabilities via gradient descent. Ultimately, the targets whose occlusion causes a sharp spike in localization loss will have their mask probabilities optimized and retained, becoming the core causal anchors we seek.
+
+---
+
+### Core Mathematical Formulas
+
+The operation of the algorithm relies on the following key mathematical expressions:
+
+**1. Continuous Relaxation**
+Control the masking degree of the $i$-th target via a learnable parameter $\alpha_i$, transforming it into a smooth, differentiable probability:
+
+
+$$p_i = \text{Sigmoid}(\alpha_i)$$
+
+**2. Image Composition and Masking**
+Apply the weighted masking probabilities of all targets to the original image $I$ via broadcasting, generating a composite input image with a semi-transparent masking layer for computation:
+
+
+$$I_{input} = I \odot (1 - \sum_{i=1}^{N} p_i \cdot M_i)$$
+
+**3. Physical Induction Engine (Distance Normalization)**
+Combine the predicted probability distribution $P_t$ with the WGS-84 based physical distance penalty matrix $D_t$, and normalize the result using the Earth's maximum semi-circumference $R_{max}$:
+
+
+$$L_{dist\_norm, t} = \frac{1}{R_{max}} \sum_{j \in \mathcal{V}_{num}} P_t(v_j \mid I_{input}, y_{<t}) \cdot D_{t, j}$$
+
+**4. Final Objective Function**
+Integrate the sparse penalty, cross-entropy destruction, and physical distance induction. Optimize the causal probabilities $p_i$ by minimizing this total loss:
+
+
+$$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE, t} + 50 \cdot L_{dist\_norm, t} \right)$$
