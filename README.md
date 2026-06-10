@@ -287,3 +287,57 @@ Integrate the sparse penalty, cross-entropy destruction, and physical distance i
 
 
 $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE, t} + 50 \cdot L_{dist\_norm, t} \right)$$
+
+```text
+[ Original Image (I) ] & [ Spatial Prompt ]
+             │
+             ▼
++-------------------------------------------------------+
+| STEP 1: Preparation (Extraction & Relaxation)         |
+|                                                       |
+|  1. VLM: Extract entities (Macro / Meso / Micro)      |
+|  2. SAM: Generate discrete masks (M_i)                |
+|  3. Parametrize: p_i = Sigmoid(α_i)                   |
+|  4. Compose Input: I_input = I ⊙ (1 - Σ p_i * M_i)    |
++-------------------------------------------------------+
+             │
+             ▼ (Composite Image: I_input)
++-------------------------------------------------------+
+| STEP 2: Intervention (Forward Pass & Masking)         |
+|                                                       |
+|  1. Feed I_input to VLM                               |
+|  2. Apply Teacher Forcing with True Coordinates       |
+|  3. Logit Masking: Block all non-numeric tokens       |
+|     to prevent distance calculation crashes           |
++-------------------------------------------------------+
+             │
+             ▼ (Pure Probability Vector: P_t)
++-------------------------------------------------------+
+| STEP 3: Computation (Dual-Engine Causal Evaluation)   |
+|                                                       |
+|  Engine A: Cross-Entropy Loss (L_CE)                  |
+|  --> Shatters model's confidence in correct tokens    |
+|                                                       |
+|  Engine B: Normalized Earth Distance (L_dist_norm)    |
+|  --> Computes physical coordinate deviation (WGS-84)  |
++-------------------------------------------------------+
+             │
+             ▼
++-------------------------------------------------------+
+| STEP 4: Optimization (Backpropagation)                |
+|                                                       |
+|  1. Calculate L_total = L_sparse - (L_CE + γ * L_dist)|
+|  2. FREEZE all VLM parameters                         |
+|  3. Backpropagate to update ONLY mask weights (α_i)   |
++-------------------------------------------------------+
+             │
+             ⟲ (Iterate via Adam for 30-50 steps)
+             │
+             ▼
++-------------------------------------------------------+
+| FINAL OUTPUT: Core Causal Anchors                     |
+|                                                       |
+|  Apply hard threshold: If p_i > 0.5                   |
+|  --> Target is locked as a core causal visual anchor  |
++-------------------------------------------------------+
+```
