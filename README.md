@@ -158,21 +158,41 @@ $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE,
 
 
 1
+
 1
+
 1
+
+
 1
+
+
 1
+
 1
+
+
 1
+
 11
+
+1
+
+
 1
 1
+
 1
+
 1
+
 1
+
+
 1
+
 1
-1
+
 
 
 
@@ -186,6 +206,39 @@ $$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE,
 This algorithm aims to solve the **black-box interpretability problem** in VLM geolocation: Through end-to-end backpropagation, it precisely reverse-engineers which specific physical entities (causal anchors) in the image determine the model's latitude and longitude predictions.
 
 ---
+
+```test
+**Role Definition:**
+You are a top-tier Geoguesser and visual semantic analysis expert. Your task is to deeply analyze the input image and extract all physical entity clues that can be used to infer the location where the photo was taken (latitude and longitude).
+
+**Extraction Rules:**
+Please break away from conventional flat visual descriptions. Adopt a "Top-Down" spatial hierarchy and strictly extract physical entities according to the following three scales. The extracted noun phrases must be specific, contain visual features, and be able to directly guide downstream image segmentation models.
+
+* **Level 1: Macro Environment** (Expected to occupy over 30% of the image area)
+* **Definition:** The wide-area background that determines the overall geographical landscape, climate environment, or urban tone.
+* **Examples:** "Row of red brick buildings in classical European style", "wet asphalt main road under an overcast sky", "open alpine coniferous forest".
+
+
+* **Level 2: Meso Landmarks** (Expected to occupy 5% to 30% of the image area)
+* **Definition:** Core structural entities with clear spatial independence and geographical specificity.
+* **Examples:** "Green cantilever traffic sign", "green cylindrical advertising column", "a red double-decker bus".
+
+
+* **Level 3: Micro Anchors** (Expected to occupy less than 5% of the image area)
+* **Definition:** Inconspicuous human-made objects or specific textures in the frame that contain extremely high geographic information entropy.
+* **Examples:** "A black Toyota sedan in the distance", "pedestrian crossing area on the road", "fire hydrant with specific markings at the corner of a wall".
+
+
+
+**Output Format Requirements:**
+Please output strictly in JSON format. Do not include any additional explanatory text, Markdown code block tags (such as `json`), or thought processes. The JSON structure must strictly be as follows:
+
+{
+"macro_environment": ["entity1", "entity2",...],
+"meso_landmarks": ["entity1", "entity2", ...],
+"micro_anchors": ["entity1", "entity2",...]
+}
+```
 
 ### Main Logic and Implementation Method
 
