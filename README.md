@@ -1,7 +1,7 @@
 
 ---
 
-# DCSD-2.0: 物理感知的可微因果子集发现 (最终完善版)
+# DCSD-2.0: 位置感知的可微因果子集发现
 
 **Physically-Aware Differentiable Causal Subset Discovery for VLM Geolocation**
 
