@@ -1,342 +1,630 @@
+对，你刚才的理解和我真正想表达的方法之间有一个差别：
+
+> **不是“给词表里每个 token 都预存一个 Haversine 距离，然后和每一步概率向量点积”。**
+> 更准确的是：**先定义一批合法的坐标 token 序列，每条序列对应一个完整坐标；再给每条完整序列预计算 Haversine 距离；优化时用模型给这些序列分配的概率去加权距离。**
+
+也就是说，Haversine 不是作用在“单个 token”上，而是作用在“完整坐标序列”上。
 
 ---
 
-# DCSD-2.0: 位置感知的可微因果子集发现
+# 1. 先看为什么不能按单 token 算
 
-**Physically-Aware Differentiable Causal Subset Discovery for VLM Geolocation**
-
-## 1. 架构总览 (Architecture Overview)
-
-本算法旨在解答：“在多模态大模型（VLM）进行地理定位时，图像中的哪些特定物理目标构成了模型预测经纬度的**核心因果锚点**？”
-为突破离散组合搜索的算力瓶颈与传统交叉熵无视物理距离的缺陷，本架构将目标遮挡过程**连续化**，并将地球大圆距离测量**可微化**。系统采用“白盒替身探测”与“双引擎因果损失”策略，实现端到端的黑盒特征寻根。
-
----
-
-## 2. 第一阶段：离散目标提取与连续化松弛 (Initialization & Relaxation)
-
-### 2.1 先验目标池化 (Object Grounding)
-
-1. **启发式发现：** 给定原图 $I$，利用 VLM 的思维链（CoT）输出定位依据，提取出 $N$ 个显著的地理实体名词。
-2. **掩码生成：** 将名词输入 Segment Anything (SAM)，获取 $N$ 个绝对离散的二进制掩码矩阵集合：
-
-$$\mathcal{M} = \{M_1, M_2, \dots, M_N\}, \quad M_i \in \{0, 1\}^{H \times W}$$
-
-* PS：在实验初期，我发现若允许 VLM 自由输出目标名词，系统会陷入严重的‘空间与信息熵失配（Spatial-Entropy Mismatch）’陷阱。生成的候选掩码在初始面积上极度不对等，且模型并未提供各名词的先验信息熵权重。这导致后续的梯度下降退化为一场‘盲目的平权优化’：优化器被迫在信息密度极其悬殊的备选目标间分配同等权重的惩罚。最终结果往往发生因果错位——系统并非找出了真正主导地理认知的因果锚点，而是单纯筛选出了那些局部信息熵最高的视觉碎片。为彻底打破这一优化捷径，我们提出并引入了分层空间诱导提示（Hierarchical Spatial Prompting）机制
-
-* 上面那句说人话就是：我发现用原来的方式，模型在提取CoT中名词的时候是纯靠语义匹配提取的，汽车和建筑和一个路灯在他的描述中都是等价的，但我们知道它在看图的时候自然不是等价的，但是通过这样的方式提取出来的目标区域掩码就大小不同其中包含的信息量也不同，一栋大楼提取出来和一辆汽车提取出来的掩码在后续的优化逻辑中出事权重都是同等分配的，尽管最后经过优化迭代确实能将大楼这个剧有更多信息的区域筛选出来，但是这到底是因为它这个区域具有更多的信息还是因为它的某个局部泄漏了更多的地理隐私是无法解释的，如果完全不管的话，以后不如直接就选图像占比大的目标算了。所以为了解耦这个问题，我用了分层目标提取的prompt。类似下面这样：
-  
-```test
-角色设定：
-  你是一个顶级的geoguesser与视觉语义分析专家。你的任务是深度解析输入的图像，并提取出所有能够用于推断该照片拍摄地（经纬度）的物理实体线索。
-
-提取规则：
-  请你打破常规的平面视觉描述，采用“自顶向下（Top-Down）”的空间层级，严格按照以下三个尺度提取物理实体。提取的名词短语必须具体、包含视觉特征，且能够直接指导下游的图像分割模型。
-
-    层级 1：宏观环境 (Macro - 预计占据画面 30% 以上面积)
-      定义： 决定整体地理风貌、气候环境或城市基调的广域背景。
-      举例： “欧洲古典风格的连排红砖建筑”、“阴天下的潮湿沥青主干道”、“开阔的高山针叶林”。
-
-    层级 2：中观地标 (Meso - 预计占据画面 5% 到 30% 面积)
-      定义： 具有明确空间独立性和地理特异性的核心结构实体。
-      举例： “绿色悬臂交通标志”、“绿色圆柱形广告塔”、“一辆红色的双层公交车”。
-
-    层级 3：微观锚点 (Micro - 预计占据画面 5% 以下面积)
-      定义： 画面里不起眼，但包含极高地理信息熵的细微人造物或特定纹理。
-      举例： “远处一辆黑色的丰田轿车”、“马路上的人行道区域”、“墙角带有特定标志的消防栓”。
-
-输出格式要求：
-  请严格以 JSON 格式输出，不要包含任何额外的解释性文字、Markdown 代码块标记（如 ```json）或思维过程。JSON 结构必须严格如下：
-{
-  "macro_environment": ["实体1", "实体2",...],
-  "meso_landmarks": ["实体1", "实体2", ...],
-  "micro_anchors": ["实体1", "实体2",...]
-}
-```
-
-
-同时轮廓的保护也非常重要，模型很多情况下可以通过精确分割的轮廓猜到这是一个什么东西，以下是一个典型例子：
-<img width="384" height="512" alt="image" src="https://github.com/user-attachments/assets/d49b89fb-42d0-43fb-b53d-7b6bf280c6f7" />
-
-下面是大模型的回复：
-
-Macro: ['dense coniferous forest', 'calm turquoise lake', 'wooden dock structure']
-Meso: ['red canoe hull', 'wooden pier with rail', 'tree-covered mountain slope']
-Micro: ['black canoe hull', 'white buoy marker', 'dark green pine needles']
-
-其中'red canoe hull'、'black canoe hull'竟然出现，很明显黑色独木舟还是被认出来了，红色那部分也许可以通过倒影识别，但是黑色独木舟就很明显是大模型根据轮廓猜到的
-
-
-
-
-### 2.2 遮挡权重的连续化映射 (Continuous Relaxation)
-
-为每个掩码 $M_i$ 声明一个可学习的标量参数 $\alpha_i$。在整个优化过程中，**大模型的全部参数被冻结，仅有 $\alpha$ 参与梯度更新**。
-将 $\alpha_i$ 经过 Sigmoid 激活，生成 $[0, 1]$ 之间的连续遮挡概率 $p_i$：
-
-
-$$p_i = \text{Sigmoid}(\alpha_i)$$
-
-
-利用广播机制（Broadcasting），将原始图像 $I$ 与加权后的掩码组合进行融合，生成具有半透明/灰色遮挡层的合成输入图像 $I_{input}$：
-
-
-$$I_{input} = I \odot (1 - \sum_{i=1}^{N} p_i \cdot M_i)$$
-
----
-
-## 3. 第二阶段：Teacher Forcing 与逻辑阉割 (Forward Pass & Masking)
-
-将 $I_{input}$ 喂给 VLM。采用 **Teacher Forcing** 机制，强制将真实的经纬度坐标字符串 $Y_{true} = [y_1, y_2, \dots, y_m]$ 喂入解码器（Decoder），迫使模型基于绝对正确的历史前缀进行单步概率评估。
-
-### 3.1 暴力逻辑阉割 (Logit Masking)
-
-在 VLM 输出每一位字符的 Logits 时，由于非数字 Token 会导致物理距离计算崩溃，我们在 Softmax 之前进行掩码拦截。
-定义合法字符集 $\mathcal{V}_{num} = \{0..9, ., -, ,\}$。对于词表中的第 $k$ 个 Token $v_k$：
-
-
-$$\text{Logit}'_{k} = \begin{cases} \text{Logit}_{k}, & \text{if } v_k \in \mathcal{V}_{num} \\ 
--\infty, & \text{otherwise} \end{cases}$$
-
-
-经过 Softmax 后，模型被迫输出长度为 13 的纯净概率向量 $\mathbf{P}_t$。
-
----
-
-## 4. 第三阶段：双引擎物理损失函数 (Dual-Engine Causal Loss)
-
-为避免单纯物理距离在优化初期导致的“梯度饱和”，本架构采用“破甲”与“诱导”双引擎机制，共同计算每一位字符 $t$ 的破坏奖励。
-
-### 4.1 破甲引擎：原生交叉熵 ($L_{CE}$)
-
-负责在优化初期，以对数梯度的暴力手段，摧毁大模型对正确 Token 的极高置信度。
-
-
-$$L_{CE, t} = -\ln P_t(y_t)$$
-
-### 4.2 诱导引擎：归一化期望距离 ($L_{dist\_norm}$)
-
-基于 WGS-84 测绘标准，利用 $111 \text{ km}$ 法则与高纬度余弦收缩，构建静态物理惩罚矩阵 $D_t$。计算概率分布与距离矩阵的点积，并使用地球最大半周长 $R_{max} = 20000 \text{ km}$ 进行归一化映射至 $[0, 1]$ 区间：
-
-
-$$L_{dist\_norm, t} = \frac{1}{R_{max}} \sum_{j \in \mathcal{V}_{num}} P_t(v_j \mid I_{input}, y_{<t}) \cdot D_{t, j}$$
-
----
-
-## 5. 第四阶段：量级对齐与离散化 (Alignment & Optimization)
-
-### 5.1 最终目标函数的设计 (The Objective)
-
-为了在反向传播中最大化定位破坏效果，我们通过优化器**最小化负破坏损失**。根据极限状态下的数学推导（瞎猜状态下交叉熵约为 $2.56m$，归一化距离约为 $0.25$），引入理论对齐常数 $\gamma \approx 50$ 抹平量级鸿沟。
-
-最终总损失函数定义为：
-
-
-$$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE, t} + 50 \cdot L_{dist\_norm, t} \right)$$
-
-* **第一项（L1 稀疏正则化）：** 迫使非必要目标的遮挡概率趋近于 0。
-* **第二项（负双引擎惩罚）：** 交叉熵打破模型自信，物理距离引导错觉方向。两者线性叠加，确保梯度在整个优化周期内稳定且具物理导向性。
-
-> **架构备选案 (Dynamic Annealing)：** 若常数对齐在特定复杂场景下出现震荡，可无缝切换为动态退火交接法：在 $50$ 步迭代中，令交叉熵权重从 $1.0$ 线性衰减至 $0.0$，同时物理距离权重 $\gamma$ 从 $0.0$ 攀升至 $50.0$，实现从“特征破坏”到“空间诱导”的平滑过渡。
-
-### 5.2 反向传播与最终阈值切割
-
-1. 调用 `L_total.backward()`，误差梯度穿过冻结的 VLM 神经网络，精确更新 $\alpha$ 参数。
-2. 使用 Adam 优化器迭代 30~50 步至 Loss 收敛。
-3. **二值化输出：** 设定硬阈值 $\tau = 0.5$。若 $p_i > \tau$，则在输出图中将其涂为 100% 纯黑，即锁定为“核心因果目标”。
-
----
-
-
-
-
-
-
-
-
-
-
-
-1
-
-1
-
-1
-
-
-1
-
-
-1
-
-1
-
-
-1
-
-11
-
-1
-
-
-1
-1
-
-1
-
-1
-
-1
-
-
-1
-
-1
-
-
-
-
-
-
-
-<img width="384" height="512" alt="image" src="https://github.com/user-attachments/assets/d49b89fb-42d0-43fb-b53d-7b6bf280c6f7" />
-
-### Core Purpose
-
-This algorithm aims to solve the **black-box interpretability problem** in VLM geolocation: Through end-to-end backpropagation, it reverse-engineers which specific physical entities (causal anchors) in the image determine the model's location predictions.
-
----
-
-
-
-### Main Logic and Implementation Method
-
-The entire workflow can be summarized into four core steps: **Candidate Discovery $\rightarrow$ Continuous Masking $\rightarrow$ Destructive Evaluation $\rightarrow$ Gradient Optimization**.
-
-* **Step 1: Object Extraction and Continuous Relaxation (Preparation Phase)**
-Utilize the VLM to extract landmark nouns from the image, and generate corresponding discrete region masks using Segment Anything (SAM). To allow these discrete masks to participate in the neural network's gradient computation, learnable parameters are introduced to transform them into continuous masking probabilities between $[0, 1]$.
-
-```test
-**Role Definition:**
-You are a top-tier Geoguesser and visual semantic analysis expert. Your task is to deeply analyze the input image and extract all physical entity clues that can be used to infer the location where the photo was taken (latitude and longitude).
-
-**Extraction Rules:**
-Please break away from conventional flat visual descriptions. Adopt a "Top-Down" spatial hierarchy and strictly extract physical entities according to the following three scales. The extracted noun phrases must be specific, contain visual features, and be able to directly guide downstream image segmentation models.
-
-* **Level 1: Macro Environment** (Expected to occupy over 30% of the image area)
-* **Definition:** The wide-area background that determines the overall geographical landscape, climate environment, or urban tone.
-* **Examples:** "Row of red brick buildings in classical European style", "wet asphalt main road under an overcast sky", "open alpine coniferous forest".
-
-
-* **Level 2: Meso Landmarks** (Expected to occupy 5% to 30% of the image area)
-* **Definition:** Core structural entities with clear spatial independence and geographical specificity.
-* **Examples:** "Green cantilever traffic sign", "green cylindrical advertising column", "a red double-decker bus".
-
-
-* **Level 3: Micro Anchors** (Expected to occupy less than 5% of the image area)
-* **Definition:** Inconspicuous human-made objects or specific textures in the frame that contain extremely high geographic information entropy.
-* **Examples:** "A black Toyota sedan in the distance", "pedestrian crossing area on the road", "fire hydrant with specific markings at the corner of a wall".
-
-
-
-**Output Format Requirements:**
-Please output strictly in JSON format. Do not include any additional explanatory text, Markdown code block tags (such as `json`), or thought processes. The JSON structure must strictly be as follows:
-
-{
-"macro_environment": ["entity1", "entity2",...],
-"meso_landmarks": ["entity1", "entity2", ...],
-"micro_anchors": ["entity1", "entity2",...]
-}
-```
-
-* **Step 2: Forward Prediction and Logit Masking (Intervention Phase)**
-Feed the composite image with probabilistic masking into the VLM, and input the true location coordinates (**Teacher Forcing**). Simultaneously, mask the probabilities of all non-numeric characters at the output logits to ensure the absolute purity of the physical distance calculation.
-
-* **Step 3: Dual-Engine Causal Evaluation (Computation Phase)**
-This is the core of the algorithm. When a target is masked, the system evaluates its "destructive power" on the final localization in two ways: first, the native **Cross-Entropy Loss** (to shatter the model's confidence); second, a normalized **physical punish based on the Earth's great-circle distance** (to evaluate the spatial coordinate deviation).
-
-* **Step 4: Magnitude Alignment and Backpropagation (Optimization Phase)**
-Combine sparse regularization, cross-entropy destruction, and physical distance alignment into the final loss function. Freeze all parameters of the VLM, and only update the mask occlusion probabilities via gradient descent. Ultimately, the targets whose occlusion causes a sharp spike in localization loss will have their mask probabilities optimized and retained, becoming the core causal anchors we seek.
-
----
-
-### Core Mathematical Formulas
-
-The operation of the algorithm rely on the following key mathematical expressions:
-
-**1. Continuous Relaxation**
-Control the masking degree of the $i$-th target via a learnable parameter $\alpha_i$, transforming it into a smooth, differentiable probability:
-
-
-$$p_i = \text{Sigmoid}(\alpha_i)$$
-
-**2. Image Composition and Masking**
-Apply the weighted masking probabilities of all targets to the original image $I$ via broadcasting, generating a composite input image with a semi-transparent masking layer for computation:
-
-
-$$I_{input} = I \odot (1 - \sum_{i=1}^{N} p_i \cdot M_i)$$
-
-**3. Physical Induction Engine (Distance Normalization)**
-Combine the predicted probability distribution $P_t$ with the WGS-84 based physical distance penalty matrix $D_t$, and normalize the result using the Earth's maximum semi-circumference $R_{max}$:
-
-
-$$L_{dist\_norm, t} = \frac{1}{R_{max}} \sum_{j \in \mathcal{V}_{num}} P_t(v_j \mid I_{input}, y_{<t}) \cdot D_{t, j}$$
-
-**4. Final Objective Function**
-Integrate the sparse penalty, cross-entropy destruction, and physical distance induction. Optimize the causal probabilities $p_i$ by minimizing this total loss:
-
-
-$$L_{total} = \lambda_{sparse} \sum_{i=1}^{N} p_i - \sum_{t=1}^{m} \left( L_{CE, t} + 50 \cdot L_{dist\_norm, t} \right)$$
+假设模型输出坐标：
 
 ```text
-[ Original Image (I) ] & [ Spatial Prompt ]
-             │
-             ▼
-+-------------------------------------------------------+
-| STEP 1: Preparation (Extraction & Relaxation)         |
-|                                                       |
-|  1. VLM: Extract entities (Macro / Meso / Micro)      |
-|  2. SAM: Generate discrete masks (M_i)                |
-|  3. Parametrize: p_i = Sigmoid(α_i)                   |
-|  4. Compose Input: I_input = I ⊙ (1 - Σ p_i * M_i)    |
-+-------------------------------------------------------+
-             │
-             ▼ (Composite Image: I_input)
-+-------------------------------------------------------+
-| STEP 2: Intervention (Forward Pass & Masking)         |
-|                                                       |
-|  1. Feed I_input to VLM                               |
-|  2. Apply Teacher Forcing with True Coordinates       |
-|  3. Logit Masking: Block all non-numeric tokens       |
-|     to prevent distance calculation crashes           |
-+-------------------------------------------------------+
-             │
-             ▼ (Pure Probability Vector: P_t)
-+-------------------------------------------------------+
-| STEP 3: Computation (Dual-Engine Causal Evaluation)   |
-|                                                       |
-|  Engine A: Cross-Entropy Loss (L_CE)                  |
-|  --> Shatters model's confidence in correct tokens    |
-|                                                       |
-|  Engine B: Normalized Earth Distance (L_dist_norm)    |
-|  --> Computes physical coordinate deviation (WGS-84)  |
-+-------------------------------------------------------+
-             │
-             ▼
-+-------------------------------------------------------+
-| STEP 4: Optimization (Backpropagation)                |
-|                                                       |
-|  1. Calculate L_total = L_sparse - (L_CE + γ * L_dist)|
-|  2. FREEZE all VLM parameters                         |
-|  3. Backpropagate to update ONLY mask weights (α_i)   |
-+-------------------------------------------------------+
-             │
-             ⟲ (Iterate via Adam for 30-50 steps)
-             │
-             ▼
-+-------------------------------------------------------+
-| FINAL OUTPUT: Core Causal Anchors                     |
-|                                                       |
-|  Apply hard threshold: If p_i > 0.5                   |
-|  --> Target is locked as a core causal visual anchor  |
-+-------------------------------------------------------+
+51.5074, -0.1278
 ```
+
+它可能被 tokenizer 切成：
+
+```text
+["51", ".", "507", "4", ",", "-", "0", ".", "127", "8"]
+```
+
+单独看 token `"51"` 没有完整地理意义。
+单独看 token `"507"` 也不知道它是纬度小数部分，还是经度小数部分，还是普通文本里的数字。
+
+所以如果你给每个 token 一个固定地理距离：
+
+[
+\text{token} \rightarrow \text{distance}
+]
+
+这是不合理的。
+
+真正有地理意义的是完整序列：
+
+```text
+"51.5074,-0.1278"
+```
+
+它可以解析成：
+
+[
+(51.5074, -0.1278)
+]
+
+然后才能和目标坐标算 Haversine 距离。
+
+---
+
+# 2. 我说的方法：序列级 Geodesic Token Risk
+
+核心思想是：
+
+> 把“解码后算距离”改成“在合法坐标序列概率分布上算期望距离”。
+
+假设我们有一个候选坐标序列集合：
+
+[
+\mathcal{B}={y^{(1)}, y^{(2)}, ..., y^{(K)}}
+]
+
+每个 (y^{(j)}) 都是一条合法坐标 token 序列。
+
+例如：
+
+```text
+y(1) = "51.5074,-0.1278"
+y(2) = "51.5075,-0.1278"
+y(3) = "51.5074,-0.1279"
+y(4) = "48.8566,+002.3522"
+...
+```
+
+每条序列都可以解析成坐标：
+
+[
+g(y^{(j)})=(\phi_j,\lambda_j)
+]
+
+然后你提前计算它和目标坐标 (g^*) 的 Haversine 距离：
+
+[
+D_j = d_{hav}(g(y^{(j)}), g^*)
+]
+
+这里 (D_j) 是常数。
+
+接下来，VLM 对这条序列的概率是：
+
+[
+p_\theta(y^{(j)}|x_m)
+=====================
+
+\prod_{t=1}^{T}
+p_\theta(y_t^{(j)}|x_m, y_{<t}^{(j)})
+]
+
+其中：
+
+* (x_m)：被连续实体 mask 修改后的图像；
+* (y_t^{(j)})：第 (j) 条坐标序列的第 (t) 个 token；
+* (p_\theta)：冻结 VLM 的 token 概率。
+
+于是定义：
+
+[
+\mathcal{R}_{geo}(x_m)
+======================
+
+\sum_{j=1}^{K}
+p_\theta(y^{(j)}|x_m)
+D_j
+]
+
+这就是我说的 **Geodesic Token Risk**。
+
+它的意思是：
+
+> 如果模型把高概率分给地理距离很远的坐标序列，loss 就大；
+> 如果模型把高概率分给地理距离很近的坐标序列，loss 就小。
+
+---
+
+# 3. 为什么这个方法不断梯度？
+
+因为你没有走这条断梯度路径：
+
+```text
+argmax token → decode string → parse float → haversine
+```
+
+而是走这条路径：
+
+```text
+entity mask → VLM logits → 坐标序列概率 → 加权 Haversine 距离
+```
+
+Haversine 距离 (D_j) 是提前算好的常数，不需要对它求导。
+
+梯度来自：
+
+[
+\frac{\partial \mathcal{R}_{geo}}{\partial x_m}
+===============================================
+
+\sum_j
+D_j
+\frac{\partial p_\theta(y^{(j)}|x_m)}{\partial x_m}
+]
+
+也就是说，梯度不是从 Haversine 公式穿回来，而是从**坐标序列概率**穿回来。
+
+所以它不会断。
+
+---
+
+# 4. 那普通词 token 怎么办？
+
+比如模型在某一步可能输出：
+
+```text
+"London"
+"street"
+"I"
+"cannot"
+```
+
+这些 token 没有坐标意义。我的方法不是给它们算 Haversine，而是用一个**坐标语法 grammar**把它们排除。
+
+例如你强制模型输出固定格式：
+
+```text
+LAT=+51.5074;LON=-000.1278
+```
+
+那么每个位置都有合法 token 集合。
+
+例如：
+
+| 位置     | 合法 token             |
+| ------ | -------------------- |
+| `LAT=` | 只能是 `LAT=` 或对应 token |
+| 纬度符号   | `+` 或 `-`            |
+| 纬度整数位  | 数字                   |
+| 小数点    | `.`                  |
+| 纬度小数位  | 数字                   |
+| 分隔符    | `;LON=`              |
+| 经度符号   | `+` 或 `-`            |
+| 经度整数位  | 数字                   |
+| 经度小数位  | 数字                   |
+
+普通词 `"London"` 不属于合法转移，所以不进入 (\mathcal{B})。
+
+但是我们还要防止模型把概率大量分给这些普通词。因此加一个有效性损失：
+
+[
+\mathcal{L}_{valid}
+===================
+
+-\log
+\sum_{y \in \mathcal{B}}
+p_\theta(y|x_m)
+]
+
+它的含义是：
+
+> 模型应该把概率质量分配给合法坐标序列，而不是输出普通句子或无效文本。
+
+最终 loss 可以写成：
+
+[
+\mathcal{L}
+===========
+
+\alpha \mathcal{R}*{geo}
++
+\beta \mathcal{L}*{valid}
++
+\lambda \mathcal{L}_{mask}
+]
+
+其中：
+
+* (\mathcal{R}_{geo})：合法坐标序列上的 Haversine 期望风险；
+* (\mathcal{L}_{valid})：惩罚非坐标输出；
+* (\mathcal{L}_{mask})：实体子集稀疏性和面积正则。
+
+---
+
+# 5. 一个具体小例子
+
+假设目标坐标是伦敦：
+
+[
+g^*=(51.5074,-0.1278)
+]
+
+我们构造 4 条候选坐标序列：
+
+| 序列        |                             坐标 | Haversine 距离 |
+| --------- | -----------------------------: | -----------: |
+| (y^{(1)}) |      London: (51.5074,-0.1278) |         0 km |
+| (y^{(2)}) | near London: (51.6000,-0.1000) |        10 km |
+| (y^{(3)}) |        Paris: (48.8566,2.3522) |       343 km |
+| (y^{(4)}) |      Tokyo: (35.6762,139.6503) |      9558 km |
+
+模型在当前 masked image 上给这些序列的概率是：
+
+| 序列         |    概率 |      |
+| ---------- | ----: | ---- |
+| (p(y^{(1)} | x_m)) | 0.50 |
+| (p(y^{(2)} | x_m)) | 0.20 |
+| (p(y^{(3)} | x_m)) | 0.20 |
+| (p(y^{(4)} | x_m)) | 0.10 |
+
+那么：
+
+[
+\mathcal{R}_{geo}
+=================
+
+0.50 \cdot 0
++
+0.20 \cdot 10
++
+0.20 \cdot 343
++
+0.10 \cdot 9558
+]
+
+# [
+
+# 0 + 2 + 68.6 + 955.8
+
+1026.4
+]
+
+如果你遮掉某些实体后，模型对 Tokyo 坐标序列的概率上升，那么 (\mathcal{R}*{geo}) 变大。
+如果你只保留某些实体后，模型仍然把概率给 London 附近，那么 (\mathcal{R}*{geo}) 变小。
+
+于是这个 loss 就可以告诉你：
+
+> 当前实体 mask 是否让模型的地理预测远离目标位置。
+
+---
+
+# 6. 这和 token CE 有什么区别？
+
+普通 token CE 是：
+
+[
+\mathcal{L}_{CE}
+================
+
+-\sum_t \log p_\theta(y_t^*|x_m,y_{<t}^*)
+]
+
+它只知道目标 token 是什么。
+它不知道地理距离。
+
+比如目标是：
+
+```text
+51.5074,-0.1278
+```
+
+模型输出：
+
+```text
+51.5075,-0.1278
+```
+
+和输出：
+
+```text
+35.6762,139.6503
+```
+
+从 token CE 角度看，二者都只是 token 不匹配。
+但从地理角度看，前者几乎还是伦敦，后者已经到东京了。
+
+你的 Haversine token risk 可以区分这两者。
+
+这就是创新点。
+
+---
+
+# 7. 候选坐标序列 (\mathcal{B}) 从哪里来？
+
+这里有几种实现方式。
+
+## 方式 A：围绕目标坐标构造局部网格
+
+如果目标是原始预测坐标 (g^*)，可以在它附近构造不同半径的候选点：
+
+* 10 m；
+* 100 m；
+* 1 km；
+* 10 km；
+* 100 km；
+* 1000 km。
+
+然后把这些候选坐标格式化成 token 序列。
+
+优点：简单稳定。
+缺点：候选空间有限。
+
+---
+
+## 方式 B：beam search 获取模型自己可能输出的坐标
+
+对原图或 masked image 做 constrained beam search，只允许输出合法坐标格式。得到 top-K 坐标序列：
+
+[
+\mathcal{B} = \text{BeamSearch}*{coord}(f*\theta,x)
+]
+
+然后对这些 beam candidates 算 Haversine 距离。
+
+优点：候选都是模型真实可能输出的。
+缺点：每次优化都 beam search 会贵。
+
+---
+
+## 方式 C：固定 geocell / coordinate lattice
+
+把地球离散成网格或 geocell，每个格点中心坐标对应一条 token 序列。
+
+例如：
+
+* 国家级；
+* 城市级；
+* 0.1° 网格；
+* S2 cell；
+* H3 cell。
+
+然后：
+
+[
+\mathcal{B}
+]
+
+就是这些 geocell center 的坐标 token 序列。
+
+优点：全局覆盖。
+缺点：候选数量可能很大，需要采样或 coarse-to-fine。
+
+---
+
+## 方式 D：混合方案
+
+最推荐的是混合：
+
+[
+\mathcal{B}
+===========
+
+\mathcal{B}*{beam}
+\cup
+\mathcal{B}*{local}
+\cup
+\mathcal{B}_{negative}
+]
+
+包括：
+
+* 模型原始预测附近坐标；
+* ground truth 附近坐标；
+* beam search 里模型高概率坐标；
+* 随机远距离负样本；
+* 同国家/不同城市样本；
+* 不同国家样本。
+
+这样 loss 既稳定，又能表达地理距离层级。
+
+---
+
+# 8. 这个 loss 怎么和实体 mask 连接？
+
+你有候选实体：
+
+[
+\mathcal{C}={e_1,e_2,\dots,e_N}
+]
+
+每个实体有一个连续 gate：
+
+[
+z_i \in [0,1]
+]
+
+构造 masked image：
+
+[
+x_m
+===
+
+x \odot \left(1-\sum_i z_i e_i\right)
++
+x_{blur} \odot \left(\sum_i z_i e_i\right)
+]
+
+直观地说：
+
+* (z_i=0)：实体保留；
+* (z_i=1)：实体被遮挡或模糊；
+* 中间值：连续混合，便于求导。
+
+然后把 (x_m) 输入冻结 VLM，得到坐标 token 概率，再计算 (\mathcal{R}_{geo})。
+
+如果你的目标是找“最小破坏子集”，就优化：
+
+[
+\max_z
+\mathcal{R}_{geo}(x_m)
+----------------------
+
+## \lambda_1 \sum_i z_i
+
+\lambda_2 \sum_i z_i Area(e_i)
+]
+
+含义：
+
+> 遮挡尽可能少的实体，但让模型地理预测尽可能远离原始位置或真实位置。
+
+如果你的目标是找“最小保留子集”，就优化：
+
+[
+\min_z
+\mathcal{R}*{geo}(x*{keep})
++
+\lambda_1 \sum_i z_i
++
+\lambda_2 \sum_i z_i Area(e_i)
+]
+
+含义：
+
+> 只保留尽可能少的实体，但模型仍然能预测原位置。
+
+这两个分别对应 necessity 和 sufficiency。
+
+---
+
+# 9. 你可以把方法理解成三层
+
+## 第一层：实体 gate 层
+
+决定遮挡哪些实体：
+
+[
+z_1,z_2,\dots,z_N
+]
+
+这是你真正要优化的变量。
+
+---
+
+## 第二层：VLM token 概率层
+
+冻结 VLM，给每条合法坐标序列一个概率：
+
+[
+p_\theta(y^{(j)}|x_m)
+]
+
+这是梯度通道。
+
+---
+
+## 第三层：地理距离风险层
+
+每条坐标序列有一个预计算 Haversine 距离：
+
+[
+D_j
+]
+
+最终：
+
+[
+\mathcal{R}_{geo}
+=================
+
+\sum_j p_\theta(y^{(j)}|x_m)D_j
+]
+
+这是地理语义。
+
+三层连起来就是：
+
+```text
+实体 gate → masked image → VLM coordinate token probability → Haversine-weighted risk
+```
+
+---
+
+# 10. 最容易误解的地方
+
+你之前理解成：
+
+> 每个 token 都有一个距离分数，然后和全词表概率向量点积。
+
+这个是**单步 token-level risk**，不够严谨。
+
+我建议的方法是：
+
+> 每条合法坐标 token 序列有一个距离分数，然后和这条序列的概率相乘。
+
+也就是：
+
+[
+\text{token-level}
+\quad \rightarrow \quad
+\text{sequence-level}
+]
+
+因为地理坐标必须作为完整序列才有意义。
+
+---
+
+# 11. 但有没有简化版可以先跑？
+
+有。MVP 阶段可以先做简化版。
+
+## 简化版 1：teacher-forced coordinate NLL + distance weighted negatives
+
+选一批候选坐标序列：
+
+* 原始预测坐标；
+* ground truth；
+* 近邻坐标；
+* 远距离坐标。
+
+对每条候选坐标序列计算 teacher-forced log probability：
+
+[
+\log p_\theta(y^{(j)}|x_m)
+==========================
+
+\sum_t \log p_\theta(y_t^{(j)}|x_m,y_{<t}^{(j)})
+]
+
+然后做：
+
+[
+\mathcal{R}_{geo}
+=================
+
+\sum_j
+\text{softmax}(\log p_\theta(y^{(j)}|x_m))
+D_j
+]
+
+这很好实现。
+
+---
+
+## 简化版 2：contrastive geodesic token loss
+
+你不直接算所有候选期望，而是让模型远离原位置、靠近远位置，或者相反。
+
+例如 deletion 目标：
+
+[
+\mathcal{L}_{del}
+=================
+
+## \log p_\theta(y_{near}|x_m)
+
+\log p_\theta(y_{far}|x_m)
++
+\lambda \mathcal{L}_{mask}
+]
+
+其中 (y_{near}) 是原始预测附近坐标，(y_{far}) 是远距离负样本。
+
+这个没有完整期望风险优雅，但很容易跑通。
+
+---
+
+# 12. 最终一句话
+
+我的 Haversine 方法不是“对单个数字 token 算距离”，而是：
+
+> **把合法坐标输出看成一组 token 序列，每条序列对应一个真实坐标和一个 Haversine 距离；然后用冻结 VLM 对这些序列的概率加权这些距离，从而构造一个不断梯度的地理 token 风险，并把梯度回传到连续实体 mask。**
+
+这就是完整思路。
