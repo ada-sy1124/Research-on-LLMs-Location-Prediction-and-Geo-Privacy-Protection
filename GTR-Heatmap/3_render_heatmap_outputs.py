@@ -13,8 +13,8 @@ from PIL import Image
 
 
 # ================= 0. PATHS AND PARAMETERS =================
-HEATMAP_RESULT_PT = "/Applications/Documents/geoai/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap/2_heatmap_result.pt"
-OUTPUT_DIR = "/Applications/Documents/geoai/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap"
+HEATMAP_RESULT_PT = "/root/autodl-tmp/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap/2_heatmap_result.pt"
+OUTPUT_DIR = "/root/autodl-tmp/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap"
 
 TOP_AREA_RATIOS = [0.05, 0.10, 0.20]
 USE_BLUR_FOR_HARD_MASK = True
@@ -133,3 +133,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+# python ./GTR-Heatmap/3_render_heatmap_outputs.py

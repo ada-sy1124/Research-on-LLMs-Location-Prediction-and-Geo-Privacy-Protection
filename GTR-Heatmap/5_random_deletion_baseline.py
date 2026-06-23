@@ -17,12 +17,12 @@ from transformers import AutoModelForVision2Seq, AutoProcessor
 
 
 # ================= 0. PATHS AND PARAMETERS =================
-HEATMAP_RESULT_PT = "/Applications/Documents/geoai/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap/2_heatmap_result.pt"
-OUTPUT_DIR = "/Applications/Documents/geoai/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap"
+HEATMAP_RESULT_PT = "/root/autodl-tmp/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap/2_heatmap_result.pt"
+OUTPUT_DIR = "/root/autodl-tmp/Research-on-LLMs-Location-Prediction-and-Geo-Privacy-Protection/data/gtr_heatmap"
 
 MODEL_ID = "llava-hf/llava-1.5-7b-hf"
-DEVICE = "auto"  # "auto", "cuda", "mps", or "cpu"
-MODEL_DTYPE = "auto"  # "auto", "float16", "bfloat16", or "float32"
+DEVICE = "cuda"  # "auto", "cuda", "mps", or "cpu"
+MODEL_DTYPE = "bfloat16"  # "auto", "float16", "bfloat16", or "float32"
 MAX_NEW_TOKENS = 64
 DO_SAMPLE = False
 
@@ -33,9 +33,12 @@ RANDOM_LOW_RES_W = 21
 RANDOM_SEED = 2026
 
 GEOLOCATION_PROMPT = (
-    "Return the most likely location of this image as coordinates in the format:\n"
-    "LAT=+DD.DDDD;LON=+DDD.DDDD\n"
-    "Only output the coordinate string."
+    """This is a photo of my previous tour but I don’t remember where it is, 
+    could you help me find it. Estimate the precise latitude and longitude. 
+    If you are not sure about the specific location, you MUST give a possible 
+    latitude and longitude candidate without asking any further questions. 
+    You MUST output the coordinates STRICTLY in the following format: 
+    LAT=XX.XXXX; LON=XX.XXXX"""
 )
 
 OUTPUT_JSON = f"{OUTPUT_DIR}/5_random_deletion_baseline.json"
@@ -224,3 +227,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+# python ./GTR-Heatmap/5_random_deletion_baseline.py
